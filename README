@@ -2,7 +2,18 @@ I have a sudden burst of interest in parsing and pattern matching issues and fou
 
   Roberto Ierusaleimschy, _A Text Pattern-Matching Tool based on Parsing Expression Grammars_
 
-This describes a powerful pattern-matching tool in Lua based on PEGs.
+This describes LPEG, a powerful pattern-matching tool in Lua based on PEGs. See more here:
+
+  http://www.inf.puc-rio.br/~roberto/lpeg/
 
 For fun, and to see if I can understand the ideas better, I'm taking a crack at implementing
 (parts of) the system in Ruby.
+
+LPEG has three parts:
+
+- a "Parsing Machine", which is a little virtual machine. A pattern/grammar is represented as
+  a program for the machine, running which against an input string applies the pattern to it.
+- lpeg, a library for describing appropriate grammars via explicit Lua code
+  - "compiling" an appropriate object means creating the VM program for it
+- re, which allows for matching against re-like patterns directly
+  - this uses the lpeg library to do its work.
