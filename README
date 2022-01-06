@@ -1,0 +1,8 @@
+I have a sudden burst of interest in parsing and pattern matching issues and found this paper:
+
+  Roberto Ierusaleimschy, _A Text Pattern-Matching Tool based on Parsing Expression Grammars_
+
+This describes a powerful pattern-matching tool in Lua based on PEGs.
+
+For fun, and to see if I can understand the ideas better, I'm taking a crack at implementing
+(parts of) the system in Ruby.
