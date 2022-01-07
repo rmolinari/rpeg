@@ -40,4 +40,44 @@ class PatternTest < Test::Unit::TestCase
     assert_equal nil, patt.match("AXY")
     assert_equal nil, patt.match("AxY") # matching is from the start of string
   end
+
+  def test_basic_concat
+    patt1 = Pattern.P("x")
+    patt2 = Pattern.R("09")
+    patt = patt1 * patt2
+
+    assert_equal 2, patt.match("x0")
+    assert_equal 2, patt.match("x4")
+    assert_equal 2, patt.match("x9")
+    assert_nil patt.match("x")
+    assert_nil patt.match("9")
+    assert_nil patt.match("xx")
+    assert_nil patt.match("a9")
+  end
+
+  def test_basic_choice
+    patt1 = Pattern.R("az")
+    patt2 = Pattern.R("09")
+
+    patt3 = Pattern.P("abc")
+
+    # Matches either a lower case letter or a digit
+    patt_a = patt1 + patt2
+
+    # Matches "abc" or a digit
+    patt_b = patt3 + patt2
+
+    assert_equal 1, patt_a.match("xY")
+    assert_equal 1, patt_a.match("x2")
+    assert_equal 1, patt_a.match("1x")
+    assert_equal 1, patt_a.match("1X")
+    assert_nil patt_a.match("X") #upper case
+    assert_nil patt_a.match("!")
+
+    assert_equal 3, patt_b.match("abc0")
+    assert_equal 1, patt_b.match("0abc")
+    assert_nil patt_b.match("a")
+    assert_nil patt_b.match("ab")
+    assert_nil patt_b.match("ab0")
+  end
 end
