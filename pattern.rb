@@ -9,8 +9,14 @@ require 'ostruct'
 
 # This class is intended to play the same role as LPEG's lpeg module. I don't yet have any real understanding of how that code works
 # so this code is liable to change a lot.
+#
+# Top-level differences from LPEG:
+#
+# - and patterns in LPEG are &patt but +patt here
+#   - unary & apparently can't be overloaded in Ruby
+#   - this pattern matches when patt appears at the current location, but it doesn't consume any of the input
 class Pattern
-  NODE_TYPES = %i[charset char string any concat ordered_choice repeat not literal].freeze
+  NODE_TYPES = %i[charset char string any concat ordered_choice repeat not and literal].freeze
 
   attr_reader :type, :left, :right, :program
 
@@ -122,6 +128,13 @@ class Pattern
   # any of the string
   def -@
     Pattern.new(:not, self)
+  end
+
+  # Unary "and": pattern matches here (without consuming any input)
+  #
+  # Ierusalimschy points out that &patt can be implemented as --patt, but there is an optimization for the VM, so we preserve it
+  def +@
+    Pattern.new(:and, self)
   end
 
   # Difference is "this but not that". So p1 - p2 matches if p1 does and p2 doesn't
@@ -291,8 +304,11 @@ class Compiler
       # repeat 0 or more times
       gen_repeat(pattern)
     when :not
-    # the child pattern doesn't match here; consume no input
+      # the child pattern doesn't match here; consume no input
       gen_not(pattern)
+    when :and
+      # the child pattern doesn't match here, but consume no input
+      gen_and(pattern)
     else
       raise "Don't know how to generate code for type #{pattern.type}"
     end
@@ -333,7 +349,14 @@ class Compiler
 
     @compile_state.add_instruction(:choice, l2)
     @compile_state.add_label_to_next(l1)
-    gen_first_pass_for(pattern.child)
+
+    # Special, quicker handling when the thing we are repeated over is a charset. See Ierusalimschy 4.3
+    if pattern.child.type == :charset
+      @compile_state.add_instruction(:span, pattern.child.child)
+    else
+      gen_first_pass_for(pattern.child)
+    end
+
     @compile_state.add_instruction(:partial_commit, l1)
     @compile_state.add_label_to_next(l2)
   end
@@ -351,6 +374,24 @@ class Compiler
     gen_first_pass_for(pattern.child)
     @compile_state.add_instruction(:fail_twice)
     @compile_state.add_label_to_next(l1)
+  end
+
+  # See Ierusalimschy section 4.4
+  #
+  #     Choice L1
+  #     <p>
+  #     BackCommit L2
+  # L1: Fail
+  # L2: ...
+  def gen_and(pattern)
+    l1 = @compile_state.next_label
+    l2 = @compile_state.next_label
+
+    @compile_state.add_instruction(:choice, l1)
+    gen_first_pass_for(pattern.child)
+    @compile_state.add_instruction(:back_commit, l2)
+    @compile_state.add_instruction(:fail, label: l1)
+    @compile_state.add_label_to_next(l2)
   end
 
   def basic_construction(pattern)
@@ -418,15 +459,12 @@ class Compiler
       prog << [op, *args]
     end
 
-    prog << :end
-
-
     prog
   end
 end
 
 class ParsingMachine
-  OP_CODES = %i[char charset any jump choice call return commit partial_commit end fail fail_twice].freeze
+  OP_CODES = %i[char charset any jump choice call return commit back_commit partial_commit span end fail fail_twice].freeze
   # subject is the string to match against
 
   attr_reader :final_index
@@ -499,7 +537,7 @@ class ParsingMachine
       when :return
         @current_instruction = pop(:instruction)
       when :commit
-        # we pop and discard the to of the stack (which must be a triple) and then do the jump given by arg1. Even though we are
+        # we pop and discard the top of the stack (which must be a triple) and then do the jump given by arg1. Even though we are
         # discarding it check that it was a full state as a sanity check.
         _ = pop(:state)
         @current_instruction += arg1
@@ -513,6 +551,20 @@ class ParsingMachine
         stack_top[2] = @capture_list.clone
 
         @current_instruction += arg1
+      when :back_commit
+        # A combination of a fail and a commit. We backtrack, but then jump to the specified instruction rather than using the
+        # backtrack label. It's used for the :and pattern. See Ierusalimschy, 4.4
+        _, subject_pos, captures = pop(:state)
+        @current_subject_position = subject_pos
+        @capture_list = captures
+        @current_instruction += arg1
+      when :span
+        # Special instruction for when we are repeating over a charset, which is common
+        if arg1.include?(@subject[@current_subject_position])
+          @current_subject_position += 1
+        else
+          @current_instruction += 1
+        end
       when :fail
         # We trigger the fail routine
         @current_instruction = :fail

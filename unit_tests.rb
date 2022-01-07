@@ -124,6 +124,17 @@ class PatternTest < Test::Unit::TestCase
     assert_nil only_identifier.match("abc12%")
   end
 
+  def test_and_predicate
+    # z followed by at least 3 characters (but don't consume those)
+    patt = Pattern.P("z") * +Pattern.P(3)
+
+    assert_equal 1, patt.match("z123")
+    assert_equal 1, patt.match("z1234")
+    assert_nil patt.match("z")
+    assert_nil patt.match("z1")
+    assert_nil patt.match("z12")
+  end
+
   def test_binary_difference
     # first charsets, which get special handling
     p1 = Pattern.R("az")
