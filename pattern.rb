@@ -5,6 +5,7 @@
 
 require 'set'
 require 'must_be'
+require 'ostruct'
 
 # This class is intended to play the same role as LPEG's lpeg module. I don't yet have any real understanding of how that code works
 # so this code is liable to change a lot.
@@ -66,38 +67,98 @@ class Pattern
 end
 
 class Compiler
+  class State
+    attr_reader :first_pass_code
+
+    def initialize
+      @next_idx = 0
+      # In the first pass instructions have the form [label, op, arg1, arg2] where label is nil or a symbolic label
+      @first_pass_code = []
+      @next_label = 0
+    end
+
+    # Add an instruction to the (first-pass) program we are building
+    #
+    # It will have the given opcode and arguments.
+    #
+    # If label is true we ensure that the new command has an associated label. If it already has one (from an earlier rule) we use
+    # it. Otherwise we generate a new one.
+    #
+    # If the new instruction has a label we return it. Otherwise we return nil.
+    def add_instruction(op_code, arg1 = nil, arg2 = nil, label: false)
+      next_instr = ensure_next_instr
+      lbl = next_instr.first
+      lbl ||= get_next_label if label
+
+      next_instr[0...] = [lbl, op_code, arg1, arg2]
+      @next_idx += 1
+
+      lbl
+    end
+
+    # Add the given label to the next instruction to be computed if there isn't one already. Some pattern translations need a label on the
+    # "first following line" to jump to.
+    #
+    # If the argument is nil, create a new label if necessary.
+    #
+    # In any case, return the label that is used.
+    def add_label(label)
+      next_instr = ensure_next_intr
+      return next_instr[0] if next_instr[0]
+
+      label ||= get_next_label
+      next_instr[0] = label
+
+      label
+    end
+
+    def get_next_label
+      res = [:label, @next_label]
+      @next_label += 1
+      res
+    end
+
+    private def ensure_next_instr
+      @first_pass_code[@next_idx] ||= []
+    end
+  end
+
   def initialize(pattern)
     @pattern = pattern.must_be_a Pattern
 
     @next_label = 0
-
-    @first_label = get_next_label
     @first_element = true
+
+    @compile_state = State.new
   end
 
   # 2-pass: first time through we generate an array of [label, op_code, arg1, arg2] tuples. label may well be nil.
   # On the second pass we resolve the (symbolic) labels to integers and then convert the references to relative offset
   def compile
-    link(first_pass)
+    make_first_pass
+    link
   end
 
   private
 
-  def link(with_symbolics)
+  def link
     # First go through and generate line numbers for each label
     label_lines = {}
-    with_symbolics.each_with_index do |command, line|
+
+    phase1 = @compile_state.first_pass_code
+
+    phase1.each_with_index do |command, line|
       label, = command
       next unless label
-
       raise "Label #{label} has already been seen" if label_lines[label]
+
       label_lines[label] = line
     end
 
     prog = []
 
     # Now pass through again and work out the offsets
-    with_symbolics.each_with_index do |command, line|
+    phase1.each_with_index do |command, line|
       _, op, *args = command
 
       args = args.map do |arg|
@@ -114,49 +175,33 @@ class Compiler
       prog << [op, *args]
     end
 
+    prog << :end
     prog
   end
 
-  def first_pass
+  def make_first_pass
     # brainless for now
-    prog = case @pattern.type
-           when :charset, :string, :any
-             simple_construction
-           else
-             raise "Don't know how to generate code for type #{@pattern.type}"
-           end
-
-    # give an address to the first line of prog
-    prog[0][0] = @first_label
-
-    last_label = get_next_label
-
-    full_prog = [
-      [nil, :call, @first_label],
-      [nil, :jump, last_label]
-    ]
-    full_prog += prog
-    full_prog << [last_label, :end]
+    case @pattern.type
+    when :charset, :string, :any
+      basic_construction
+    else
+      raise "Don't know how to generate code for type #{@pattern.type}"
+    end
   end
 
-  def simple_construction
-    prog = case @pattern.type
-           when :charset
-             [[nil, :charset, Set.new(@pattern.data)]]
-           when :string
-             @pattern.data.chars.map { [nil, :char, _1] }
-           when :any
-             [[nil, :any, @pattern.data]]
-           else
-             raise "#{@pattern.type} is not a simple construction"
-           end
-
-    prog << [nil, :return]
-  end
-
-  def get_next_label
-    @next_label += 1
-    [:label, @next_label]
+  def basic_construction
+    case @pattern.type
+    when :charset
+      @compile_state.add_instruction(:charset, Set.new(@pattern.data))
+    when :string
+      @pattern.data.chars.each do |ch|
+        @compile_state.add_instruction(:char, ch)
+      end
+    when :any
+      @compile_state.add_instruction(:any, @pattern.data)
+    else
+      raise "#{@pattern.type} is not a simple construction"
+    end
   end
 end
 
@@ -183,23 +228,10 @@ class ParsingMachine
 
   def run
     loop do
+      return if done?
+
       if @current_instruction == :fail
-        # special handling
-        if @stack.empty?
-          @success = false
-          return
-        end
-
-        top = @stack.pop
-        if top.is_a?(Numeric)
-          # nothing more to do
-        else
-          p, i, c = top
-          @current_instruction = p
-          @current_subject_position = i
-          @capture_list = c
-        end
-
+        handle_fail_ptr
         next
       end
 
@@ -244,13 +276,44 @@ class ParsingMachine
         ret_address = @stack.pop
         raise "Nothing on stack for return" unless ret_address
         raise "Expected instruction pointer on stack for return" unless ret_address.is_a?(Integer)
+
         @current_instruction = ret_address
       when :end
         @success = true
         @final_index = @current_subject_position
-        return
+        done!
       else
         raise "Unsupported op code #{op_code}"
+      end
+    end
+  end
+
+  private
+
+  def done!
+    @done = true
+  end
+
+  def done?
+    @done
+  end
+
+  # Not for the FAIL op_code, but for when the instruction pointer is :fail
+  def handle_fail_ptr
+    # special handling
+    if @stack.empty?
+      @success = false
+      done!
+    else
+      top = @stack.pop
+
+      if top.is_a?(Numeric)
+      # nothing more to do
+      else
+        p, i, c = top
+        @current_instruction = p
+        @current_subject_position = i
+        @capture_list = c
       end
     end
   end
