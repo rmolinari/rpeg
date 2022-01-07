@@ -96,14 +96,31 @@ class PatternTest < Test::Unit::TestCase
   end
 
   def test_alphanum_identifiers
-    alpha = Pattern.R("az") + Pattern.R("AZ") + Pattern.S("_")
-    digit = Pattern.R("09")
-    alphanum = alpha + digit
+    assert_equal 5, identifier_pattern.match("a1_23")
+    assert_equal 4, identifier_pattern.match("a123%%")
+    assert_equal nil, identifier_pattern.match("123")
+  end
 
-    identifier = alpha * alphanum**0
+  def test_not_predicate
+    # Things not starting with z
+    patt = -Pattern.P("z")
 
-    assert_equal 5, identifier.match("a1_23")
-    assert_equal 4, identifier.match("a123%%")
-    assert_equal nil, identifier.match("123")
+    assert_equal 0, patt.match("a")
+    assert_equal 0, patt.match("az")
+    assert_equal nil, patt.match("z")
+  end
+
+  ########################################
+  # Helpers
+
+  # [a-zA-Z_][a-zA-Z_0-9]*
+  def identifier_pattern
+    @identifier_pattern ||= begin
+                              alpha = Pattern.R("az") + Pattern.R("AZ") + Pattern.S("_")
+                              digit = Pattern.R("09")
+                              alphanum = alpha + digit
+
+                              alpha * alphanum**0
+                            end
   end
 end

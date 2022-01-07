@@ -10,7 +10,7 @@ require 'ostruct'
 # This class is intended to play the same role as LPEG's lpeg module. I don't yet have any real understanding of how that code works
 # so this code is liable to change a lot.
 class Pattern
-  NODE_TYPES = %i[charset char string any concat ordered_choice repeat].freeze
+  NODE_TYPES = %i[charset char string any concat ordered_choice repeat not].freeze
 
   attr_reader :type, :left, :right, :program
 
@@ -92,6 +92,12 @@ class Pattern
     patt
   end
 
+  # Unary negation represents "does not match". So -patt says that there is no match at the current position and we don't consume
+  # any of the string
+  def -@
+    Pattern.new(:not, self)
+  end
+
   # If left is defined and right is nil - so we have a unary op - we can get child here
   def child
     raise 'Pattern is not unary' if right
@@ -122,7 +128,7 @@ class Compiler
       @next_idx = 0
       # In the first pass instructions have the form [label, op, arg1, arg2] where label is nil or a symbolic label
       @first_pass_code = []
-      @next_label = 0
+      @next_label = 1
     end
 
     # Add an instruction to the (first-pass) program we are building
@@ -205,6 +211,9 @@ class Compiler
     when :repeat
       # repeat 0 or more times
       gen_repeat(pattern)
+    when :not
+    # the child pattern doesn't match here; consume no input
+      gen_not(pattern)
     else
       raise "Don't know how to generate code for type #{pattern.type}"
     end
@@ -248,6 +257,21 @@ class Compiler
     gen_first_pass_for(pattern.child)
     @compile_state.add_instruction(:partial_commit, l1)
     @compile_state.add_label_to_next(l2)
+  end
+
+  # See Ierusalimschy section 4.4
+  #
+  #     Choice L1
+  #     <p>
+  #     FailTwice
+  # L1: ...
+  def gen_not(pattern)
+    l1 = @compile_state.next_label # get a label
+
+    @compile_state.add_instruction(:choice, l1)
+    gen_first_pass_for(pattern.child)
+    @compile_state.add_instruction(:fail_twice)
+    @compile_state.add_label_to_next(l1)
   end
 
   def basic_construction(pattern)
@@ -316,7 +340,7 @@ class Compiler
 end
 
 class ParsingMachine
-  OP_CODES = %i[char charset any jump choice call return commit partial_commit end fail].freeze
+  OP_CODES = %i[char charset any jump choice call return commit partial_commit end fail fail_twice].freeze
   # subject is the string to match against
 
   attr_reader :final_index
@@ -403,6 +427,14 @@ class ParsingMachine
         stack_top[2] = @capture_list.clone
 
         @current_instruction += arg1
+      when :fail
+        # We trigger the fail routine
+        @current_instruction = :fail
+      when :fail_twice
+        # An optimization for the not(pattern) implementation. We pop the top of the stack and discard it, and then enter the fail
+        # routine again. For sanity's sake we'll check that the thing we are popping is a :state entry. See Ierusalimschy, 4.4
+        _ = pop(:state)
+        @current_instruction = :fail
       when :end
         @success = true
         @final_index = @current_subject_position
