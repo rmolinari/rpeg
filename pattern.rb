@@ -10,35 +10,61 @@ require 'ostruct'
 # This class is intended to play the same role as LPEG's lpeg module. I don't yet have any real understanding of how that code works
 # so this code is liable to change a lot.
 class Pattern
-  NODE_TYPES = %i[charset char string any concat ordered_choice repeat not].freeze
+  NODE_TYPES = %i[charset char string any concat ordered_choice repeat not literal].freeze
 
   attr_reader :type, :left, :right, :program
 
   class << self
     # Match any character in string (regarded as a set of characters)
     def S(string)
-      new(:charset, string.chars)
+      new(:charset, Set.new(string.chars))
     end
 
-    # Match string literally, as a sequence of chars
-    # when arg is a non-negative integer, match exactly that many chars
+    # Take argument and turn it into a pattern
     def P(arg)
       case arg
       when String
+        # match that string exactly
         new(:string, arg)
       when Integer
+        # match any n characters
         raise "Negative value not allowed for #P" unless arg >= 0
         new(:any, arg)
+      when FalseClass, TrueClass
+        new(:literal, arg)
       else
         raise "Pattern.P does not support argument #{arg}"
       end
     end
 
-    # Given a 2-char string xy, the ASCII range x..y
-    def R(str)
-      raise "Bad data #{str} for Pattern#R" unless str.is_a?(String) && str.size == 2
+    # Given a 2-char string xy, the ASCII range x..y. Each argument gives a range and we match on their union
+    def R(*ranges)
+      raise 'No data given!' if ranges.empty?
 
-      new(:charset, (str[0])..(str[1]))
+      check = lambda do |str|
+        raise "Bad data #{str} for Pattern#R" unless str.is_a?(String) && str.size == 2
+        (str[0])..(str[1])
+      end
+
+      result = ranges.map{ check.call(_1) }.reduce { |memo, operand| charset_union(memo, operand) }
+
+      Pattern.new(:charset, result)
+    end
+
+    private def charset_union(cs1, cs2)
+      if cs1.is_a?(Set)
+        cs1.merge(cs2)
+      elsif cs2.is_a?(Range)
+        #both ranges
+        if cs1.max < cs2.min || cs2.max < cs1.min
+          # disjoint
+          Set.new(cs1) + Set.new(cs2)
+        else
+          ([cs1.min, cs2.min].min)..([cs1.max, cs2.max].max)
+        end
+      else
+        Set.new(cs1).merge(cs2)
+      end
     end
   end
 
@@ -71,7 +97,7 @@ class Pattern
   def +(other)
     check_type(other)
 
-    # TODO: if self and other are both :charset, combine the sets rather than form an :ordered_choice
+    # TODO: if self and other are both :char or :charset, combine the sets rather than form an :ordered_choice
     Pattern.new(:ordered_choice, self, other)
   end
 
@@ -98,6 +124,26 @@ class Pattern
     Pattern.new(:not, self)
   end
 
+  # Difference is "this but not that". So p1 - p2 matches if p1 does and p2 doesn't
+  #
+  # Special case: if both patterns are charsets we replace with a single charset
+  def -(other)
+    check_type(other)
+
+    if type == :charset && other.type == :charset
+      new_cs = charset_difference(child, other.child)
+      if new_cs.is_a?(Set) && new_cs.empty?
+        # always fails
+        Pattern.P(false)
+      else
+        Pattern.new(:charset, new_cs)
+      end
+    end
+
+    # Otherwise we use -p2 * p1: p2 doesn't match here followed by p1 does match here
+    -other * self
+  end
+
   # If left is defined and right is nil - so we have a unary op - we can get child here
   def child
     raise 'Pattern is not unary' if right
@@ -109,6 +155,28 @@ class Pattern
     raise "Cannot coerce #{pattern} into a Pattern" unless other.is_a? Pattern
   end
 
+  # Each is either a Set or a Range
+  private def charset_difference(cs1, cs2)
+    if cs1.is_a?(Set)
+      cs1.subtract(cs2)
+    elsif cs2.is_a?(Range)
+      # They are both ranges. We can keep it that way so long as cs2 isn't in the middle of cs1.
+      if cs1.min < cs2.min && cs2.max < cs1.max
+        # Oh, hamburgers!
+        Set.new(cs1).subtract(cs2)
+      elsif cs2.min <= cs1.min && cs2.max >= cs1.max
+        # Empty set!
+        Set.new
+        elseif cs2.min <= cs1.min
+        (cs2.max)..(cs1.max)
+      else
+        (cs1.min)..(cs2.min)
+      end
+    else
+      Set.new(cs1).subtract(cs2)
+    end
+  end
+
   def initialize(type, left, right = nil)
     raise "Bad node type #{type}" unless NODE_TYPES.include?(type)
 
@@ -117,6 +185,17 @@ class Pattern
     @right = right
 
     @program = nil
+  end
+
+  private def sanity_check
+    case type
+    when :charset
+      right.must_be nil
+      left.must_be_a(Set, Range)
+    when :literal
+      right.must_be nil
+      left.must_be_in(true, false)
+    end
   end
 end
 
@@ -204,7 +283,7 @@ class Compiler
   def gen_first_pass_for(pattern)
     # brainless for now
     case pattern.type
-    when :charset, :string, :any, :concat
+    when :charset, :string, :any, :concat, :literal
       basic_construction(pattern)
     when :ordered_choice
       gen_ordered_choice(pattern)
@@ -290,6 +369,13 @@ class Compiler
 
       gen_first_pass_for(p1)
       gen_first_pass_for(p2)
+    when :literal
+      if pattern.data
+        # we always succeed, so nothing to do
+      else
+        # we always fail
+        @compile_state.add_instruction(:fail)
+      end
     else
       raise "#{pattern.type} is not a simple construction"
     end
@@ -391,7 +477,7 @@ class ParsingMachine
         match_char_p.call(arg1.include?(@subject[@current_subject_position]))
       when :any
         # arg1 is the number of chars we are looking for
-        if @current_subject_position + arg1 < @subject.size
+        if @current_subject_position + arg1 <= @subject.size
           @current_instruction += 1
           @current_subject_position += arg1
         else

@@ -27,6 +27,7 @@ class PatternTest < Test::Unit::TestCase
     assert_equal nil, patt.match("")
     assert_equal nil, patt.match("a")
     assert_equal nil, patt.match("ab")
+    assert_equal 3, patt.match("abc")
     assert_equal 3, patt.match("abcd")
     assert_equal 3, patt.match("abcde")
   end
@@ -96,8 +97,8 @@ class PatternTest < Test::Unit::TestCase
   end
 
   def test_alphanum_identifiers
-    assert_equal 5, identifier_pattern.match("a1_23")
-    assert_equal 4, identifier_pattern.match("a123%%")
+    assert_equal 5, identifier_pattern.match("aX_23")
+    assert_equal 4, identifier_pattern.match("a12D%%")
     assert_equal nil, identifier_pattern.match("123")
   end
 
@@ -108,6 +109,35 @@ class PatternTest < Test::Unit::TestCase
     assert_equal 0, patt.match("a")
     assert_equal 0, patt.match("az")
     assert_equal nil, patt.match("z")
+
+    # Match a single character only: anchored at end
+    single_char = Pattern.P(1)
+    one_only = single_char * -single_char
+
+    assert_equal 1, one_only.match("a")
+    assert_nil one_only.match("ab")
+
+    # Matching all the way to the end
+    only_identifier = identifier_pattern * -Pattern.P(1)
+
+    assert_equal 5, only_identifier.match("abc12")
+    assert_nil only_identifier.match("abc12%")
+  end
+
+  def test_binary_difference
+    # first charsets, which get special handling
+    p1 = Pattern.R("az")
+    p2 = Pattern.R("nz")
+    first_half = p1 - p2 # the first half of the alphabet
+
+    assert_equal 1, first_half.match("m")
+    assert_nil first_half.match("n")
+
+    # This one is an identifier not starting with z
+    no_z = identifier_pattern - Pattern.P("z")
+
+    assert_equal 3, no_z.match("y12")
+    assert_nil no_z.match("z12")
   end
 
   ########################################
@@ -116,7 +146,7 @@ class PatternTest < Test::Unit::TestCase
   # [a-zA-Z_][a-zA-Z_0-9]*
   def identifier_pattern
     @identifier_pattern ||= begin
-                              alpha = Pattern.R("az") + Pattern.R("AZ") + Pattern.S("_")
+                              alpha = Pattern.R("az", "AZ") + Pattern.S("_")
                               digit = Pattern.R("09")
                               alphanum = alpha + digit
 
