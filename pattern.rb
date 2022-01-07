@@ -10,9 +10,9 @@ require 'ostruct'
 # This class is intended to play the same role as LPEG's lpeg module. I don't yet have any real understanding of how that code works
 # so this code is liable to change a lot.
 class Pattern
-  NODE_TYPES = %i[charset char string any concat ordered_choice].freeze
+  NODE_TYPES = %i[charset char string any concat ordered_choice repeat].freeze
 
-  attr_reader :type, :data, :program
+  attr_reader :type, :left, :right, :program
 
   class << self
     # Match any character in string (regarded as a set of characters)
@@ -29,6 +29,8 @@ class Pattern
       when Integer
         raise "Negative value not allowed for #P" unless arg >= 0
         new(:any, arg)
+      else
+        raise "Pattern.P does not support argument #{arg}"
       end
     end
 
@@ -62,7 +64,7 @@ class Pattern
   # p1 * p2 is matches p1 followed by p2
   def *(other)
     check_type(other)
-    Pattern.new(:concat, [self, other])
+    Pattern.new(:concat, self, other)
   end
 
   # p1 + p2 is ordered choice: if p1 matches we match, otherwise try matching on p2
@@ -70,18 +72,43 @@ class Pattern
     check_type(other)
 
     # TODO: if self and other are both :charset, combine the sets rather than form an :ordered_choice
-    Pattern.new(:ordered_choice, [self, other])
+    Pattern.new(:ordered_choice, self, other)
+  end
+
+  # pat ** n means "n or more occurrences of def"
+  #
+  # TODO:
+  # - negative values: -n means at most n occurrences
+  def **(num)
+    raise "Power (repetition) currently supported only for non-negative integers" unless num.is_a?(Integer) && !num.negative?
+
+    # So, we represent this by a sequence of num occurrences, followed by a zero-or-more
+
+    patt = Pattern.new(:repeat, self) # this repeats 0 or more times
+    while num > 0
+      patt = self * patt
+      num -= 1
+    end
+    patt
+  end
+
+  # If left is defined and right is nil - so we have a unary op - we can get child here
+  def child
+    raise 'Pattern is not unary' if right
+
+    left
   end
 
   private def check_type(other)
     raise "Cannot coerce #{pattern} into a Pattern" unless other.is_a? Pattern
   end
 
-  def initialize(type, data)
+  def initialize(type, left, right = nil)
     raise "Bad node type #{type}" unless NODE_TYPES.include?(type)
 
     @type = type
-    @data = data
+    @left = left
+    @right = right
 
     @program = nil
   end
@@ -103,44 +130,31 @@ class Compiler
     # It will have the given opcode and arguments.
     #
     # If label is truthy we ensure that the new command has an associated label.
-    # - If label is an actual label value, use it
+    # - If label is an actual label value, use it, adding it to any already there
     # - otherwise, if the new command already has one (from an earlier rule) we use it
     # - otherwise we generate a new one
-    #
-    # It is an error to pass in a label if the next instruction already has a different label
-    #
-    # If the new instruction has a label we return it. Otherwise we return nil.
     def add_instruction(op_code, arg1 = nil, arg2 = nil, label: false)
       next_instr = ensure_next_instr
-      lbl = next_instr.first
+      labels_for_instr = next_instr.first
 
       if label?(label)
-        raise "Cannot specify label #{label} when next instruction already has label #{lbl}" if lbl && label != lbl
-
-        lbl = label
+        labels_for_instr << label
       elsif label
-        lbl ||= next_label
+        labels_for_instr << next_label
       end
 
-      next_instr[0...] = [lbl, op_code, arg1, arg2]
+      next_instr[0...] = [labels_for_instr, op_code, arg1, arg2]
       @next_idx += 1
-
-      lbl
     end
 
-    # Add the given label to the next instruction to be generated. Raise if there is already one
+    # Add the given label to the next instruction to be generated.
     #
-    # If the argument is nil, create a new label if necessary.
-    #
-    # In any case, return the label that is used.
+    # If the argument is nil, create a new label.
     def add_label_to_next(label)
       next_instr = ensure_next_instr
-      raise "Cannot add label to next instruction if there is already one" if next_instr[0]
 
       label ||= get_next_label
-      next_instr[0] = label
-
-      label
+      next_instr[0] << label
     end
 
     def next_label
@@ -154,7 +168,8 @@ class Compiler
     end
 
     private def ensure_next_instr
-      @first_pass_code[@next_idx] ||= []
+      # the first element will contain the set (possibly empty) of labels for this line
+      @first_pass_code[@next_idx] ||= [Set.new]
     end
   end
 
@@ -180,10 +195,6 @@ class Compiler
 
   private
 
-  def check_args(pattern, expected_len = 2)
-    raise "expected exactly #{expected_len} arguments" unless pattern.data.size == expected_len
-  end
-
   def gen_first_pass_for(pattern)
     # brainless for now
     case pattern.type
@@ -191,6 +202,9 @@ class Compiler
       basic_construction(pattern)
     when :ordered_choice
       gen_ordered_choice(pattern)
+    when :repeat
+      # repeat 0 or more times
+      gen_repeat(pattern)
     else
       raise "Don't know how to generate code for type #{pattern.type}"
     end
@@ -210,8 +224,8 @@ class Compiler
   #
   # For now just do the straightforward thing
   def gen_ordered_choice(pattern)
-    check_args(pattern)
-    p1, p2 = pattern.data
+    p1 = pattern.left.must_be
+    p2 = pattern.right.must_be
 
     l1 = @compile_state.next_label
     l2 = @compile_state.next_label
@@ -224,20 +238,31 @@ class Compiler
     @compile_state.add_label_to_next(l2)
   end
 
+  # See Ierusalimschy, section 4.3
+  def gen_repeat(pattern)
+    l1 = @compile_state.next_label
+    l2 = @compile_state.next_label
+
+    @compile_state.add_instruction(:choice, l2)
+    @compile_state.add_label_to_next(l1)
+    gen_first_pass_for(pattern.child)
+    @compile_state.add_instruction(:partial_commit, l1)
+    @compile_state.add_label_to_next(l2)
+  end
+
   def basic_construction(pattern)
     case pattern.type
     when :charset
-      @compile_state.add_instruction(:charset, Set.new(pattern.data))
+      @compile_state.add_instruction(:charset, Set.new(pattern.child))
     when :string
-      pattern.data.chars.each do |ch|
+      pattern.child.chars.each do |ch|
         @compile_state.add_instruction(:char, ch)
       end
     when :any
-      @compile_state.add_instruction(:any, pattern.data)
+      @compile_state.add_instruction(:any, pattern.child)
     when :concat
-      check_args(pattern)
-
-      p1, p2 = pattern.data
+      p1 = pattern.left.must_be
+      p2 = pattern.right.must_be
 
       gen_first_pass_for(p1)
       gen_first_pass_for(p2)
@@ -253,12 +278,13 @@ class Compiler
     phase1 = @compile_state.first_pass_code
 
     phase1.each_with_index do |command, line|
-      label, = command
-      next unless label
+      labels, = command
+      next if labels.empty?
 
-      raise "Label #{label} has already been seen" if label_lines[label]
-
-      label_lines[label] = line
+      labels.each do |label|
+        raise "Label #{label} has already been used" if label_lines[label]
+        label_lines[label] = line
+      end
     end
 
     prog = []
@@ -290,7 +316,7 @@ class Compiler
 end
 
 class ParsingMachine
-  OP_CODES = %i[char charset any jump choice call return commit end fail].freeze
+  OP_CODES = %i[char charset any jump choice call return commit partial_commit end fail].freeze
   # subject is the string to match against
 
   attr_reader :final_index
@@ -352,23 +378,30 @@ class ParsingMachine
         @current_instruction += arg1
       when :choice
         # arg1 is the offset for the other side of the choice, which we push onto the stack
-        @stack.push([@current_instruction + arg1, @current_subject_position, @capture_list.clone])
+        push(:state, arg1)
         @current_instruction += 1
       when :call
         # arg1 is an offset for the label to call.
         #
         # Call is like jump, but we push the return address onto the stack first
-        @stack.push(@current_instruction + 1)
+        push(:offset, 1)
         @current_instruction += arg1
       when :return
-        ret_address = @stack.pop
-        raise 'Nothing on stack for return' unless ret_address
-        raise 'Expected instruction pointer on stack for return' unless ret_address.is_a?(Integer)
-
-        @current_instruction = ret_address
+        @current_instruction = pop(:instruction)
       when :commit
-        # we pop and discard the to of the stack (which must be a triple) and then do the jump given by arg1
-        _ = @stack.pop
+        # we pop and discard the to of the stack (which must be a triple) and then do the jump given by arg1. Even though we are
+        # discarding it check that it was a full state as a sanity check.
+        _ = pop(:state)
+        @current_instruction += arg1
+      when :partial_commit
+        # Sort of a combination of commit (which pops) and choice (which pushes), but we just tweak the top of the stack. See
+        # Ierusalimschy, sec 4.3
+        stack_top = peek(:state)
+        raise "Empty stack for partial commit!" unless stack_top
+
+        stack_top[1] = @current_subject_position
+        stack_top[2] = @capture_list.clone
+
         @current_instruction += arg1
       when :end
         @success = true
@@ -397,7 +430,7 @@ class ParsingMachine
       @success = false
       done!
     else
-      top = @stack.pop
+      top = pop
 
       if top.is_a?(Numeric)
       # nothing more to do
@@ -408,5 +441,51 @@ class ParsingMachine
         @capture_list = c
       end
     end
+  end
+
+  ########################################
+  # Stack manipulation
+
+  # We push either
+  # - an instruction pointer, which may later be used to jump, etc, or
+  # - the current state with an offset, which is the [instr ptr + offset, subject_pos, capture list] triple. Let's tag them for sanity's sake
+  def push(type, offset)
+    raise "must push something" unless offset
+
+    case type
+    when :instruction
+      @stack.push([:instruction, @current_instruction + offset])
+    when :state
+      @stack.push([:state, [@current_instruction + offset, @current_subject_position, @capture_list.clone]])
+    else
+      raise "Bad push type #{type}"
+    end
+  end
+
+  # Pop the top thing on the stack and return it (not including the tag). If expecting is non nil check that it equals the tag
+  #
+  # Raise if stack is empty
+  def pop(expecting = nil)
+    raise "Nothing in stack to pop" if @stack.empty?
+
+    tag, val = @stack.pop
+
+    raise "Top of stack is of type #{tag}, not of expected type #{expecting}" if expecting && expecting != tag
+
+    val
+  end
+
+  # Peek and return the top of the stack, or nil if the stack is empty. The returned value, if an array, can be modified, thus
+  # affecting the stack
+  #
+  # If expecting is given make sure that the top of the stack is of the given type
+  def peek(expecting = nil)
+    return nil if @stack.empty?
+
+    tag, val = @stack.last
+
+    raise "Top of stack is of type #{tag}, not of expected type #{expecting}" if expecting && expecting != tag
+
+    val
   end
 end

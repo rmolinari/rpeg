@@ -80,4 +80,30 @@ class PatternTest < Test::Unit::TestCase
     assert_nil patt_b.match("ab")
     assert_nil patt_b.match("ab0")
   end
+
+  def test_simple_repetition
+    patt = Pattern.P("a")
+
+    rep_patts = []
+
+    (0..10).each do |count|
+      p = (rep_patts[count] ||= patt ** count)
+      p1 = (rep_patts[count+1] ||= patt ** (count+1))
+
+      assert_equal count, p.match("a" * count), "match failed for repeat count #{count}"
+      assert_equal nil, p1.match("a" * count), "match failed for repeat count #{count}"
+    end
+  end
+
+  def test_alphanum_identifiers
+    alpha = Pattern.R("az") + Pattern.R("AZ") + Pattern.S("_")
+    digit = Pattern.R("09")
+    alphanum = alpha + digit
+
+    identifier = alpha * alphanum**0
+
+    assert_equal 5, identifier.match("a1_23")
+    assert_equal 4, identifier.match("a123%%")
+    assert_equal nil, identifier.match("123")
+  end
 end
