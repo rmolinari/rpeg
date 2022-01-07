@@ -16,7 +16,7 @@ require 'ostruct'
 #   - unary & apparently can't be overloaded in Ruby
 #   - this pattern matches when patt appears at the current location, but it doesn't consume any of the input
 class Pattern
-  NODE_TYPES = %i[charset char string any concat ordered_choice repeat not and literal].freeze
+  NODE_TYPES = %i[charset char string any concat ordered_choice repeat not and literal grammar open_call].freeze
 
   attr_reader :type, :left, :right, :program
 
@@ -27,17 +27,31 @@ class Pattern
     end
 
     # Take argument and turn it into a pattern
+    #
+    # TODO (from the lpeg homepage)
+    #  - If the argument is a table [roughly a HashTable in Ruby], it is interpreted as a grammar
+    #  - If the argument is a function, returns a pattern equivalent to a match-time capture over the empty string.
     def P(arg)
       case arg
+      when Pattern
+        arg
       when String
         # match that string exactly
         new(:string, arg)
       when Integer
-        # match any n characters
-        raise "Negative value not allowed for #P" unless arg >= 0
-        new(:any, arg)
+        # When n >= 0, match at least n chars.
+        # When n < 0, there must not be n or more characters left
+        if arg >= 0
+          new(:any, arg)
+        else
+          # "Does not match n characters"
+          -new(:any, -arg)
+        end
       when FalseClass, TrueClass
         new(:literal, arg)
+      when Hash
+        # See the Compiler for how we interpret this, which is a bit different from LPEG
+        new(:grammar, arg)
       else
         raise "Pattern.P does not support argument #{arg}"
       end
@@ -55,6 +69,16 @@ class Pattern
       result = ranges.map{ check.call(_1) }.reduce { |memo, operand| charset_union(memo, operand) }
 
       Pattern.new(:charset, result)
+    end
+
+    # An "open call" reference to a rule in a grammar. As we don't have the grammar yet - it is available in full only when we are
+    # ready to cmopile - we remember it this way.
+    #
+    # ref should be either
+    #  - a non-negative integer n, referring to the n-th rule in grammar (0-based) or
+    #  - a value that will be the key in the final grammar - a Hash - of the rule being referenced
+    def V(ref)
+      Pattern.new(:open_call, ref)
     end
 
     private def charset_union(cs1, cs2)
@@ -208,6 +232,15 @@ class Pattern
     when :literal
       right.must_be nil
       left.must_be_in(true, false)
+    when :grammar
+      right.must_be nil
+      left.must_be_a(Hash)
+      left.must_not.empty?
+    when :open_call
+      right.must_be nil
+      if left.is_a?(Integer)
+        left.must_not.negative?
+      end
     end
   end
 end
@@ -221,24 +254,23 @@ class Compiler
       # In the first pass instructions have the form [label, op, arg1, arg2] where label is nil or a symbolic label
       @first_pass_code = []
       @next_label = 1
+      @nonterminal_indices = []
+
+      @labels = Set.new
     end
 
     # Add an instruction to the (first-pass) program we are building
     #
     # It will have the given opcode and arguments.
     #
-    # If label is truthy we ensure that the new command has an associated label.
-    # - If label is an actual label value, use it, adding it to any already there
-    # - otherwise, if the new command already has one (from an earlier rule) we use it
-    # - otherwise we generate a new one
-    def add_instruction(op_code, arg1 = nil, arg2 = nil, label: false)
+    # If label is given we attach it to the new instruction
+    def add_instruction(op_code, arg1 = nil, arg2 = nil, label: nil)
       next_instr = ensure_next_instr
       labels_for_instr = next_instr.first
 
-      if label?(label)
+      if label
         labels_for_instr << label
-      elsif label
-        labels_for_instr << next_label
+        remember_label(label)
       end
 
       next_instr[0...] = [labels_for_instr, op_code, arg1, arg2]
@@ -246,28 +278,47 @@ class Compiler
     end
 
     # Add the given label to the next instruction to be generated.
-    #
-    # If the argument is nil, create a new label.
     def add_label_to_next(label)
       next_instr = ensure_next_instr
-
-      label ||= get_next_label
+      label.must_be
       next_instr[0] << label
+      remember_label(label)
     end
 
     def next_label
       res = [:label, @next_label]
       @next_label += 1
+      remember_label(res)
       res
     end
 
-    private def label?(arg)
-      Array(arg).first == :label
+    def label?(arg)
+      @labels.include?(arg)
+    end
+
+    def register_nonterminal(nonterminal, index)
+      @nonterminal_indices[index] = nonterminal
+    end
+
+    def index_of_nonterminal(nonterminal)
+      @nonterminal_indices.index(nonterminal)
+    end
+
+    def nonterminal_with_index(index)
+      raise "Cannot look nonterminal with negative index" if index < 0
+      @nonterminal_indices[index]
     end
 
     private def ensure_next_instr
       # the first element will contain the set (possibly empty) of labels for this line
       @first_pass_code[@next_idx] ||= [Set.new]
+    end
+
+    private def remember_label(label)
+      # For technical reasons related to the linker a label can't have a non-negative integer value
+      raise "Illegal label #{label}" if label.is_a?(Integer) && label >= 0
+
+      @labels << label
     end
   end
 
@@ -296,7 +347,7 @@ class Compiler
   def gen_first_pass_for(pattern)
     # brainless for now
     case pattern.type
-    when :charset, :string, :any, :concat, :literal
+    when :charset, :string, :any, :concat, :literal, :open_call
       basic_construction(pattern)
     when :ordered_choice
       gen_ordered_choice(pattern)
@@ -309,6 +360,8 @@ class Compiler
     when :and
       # the child pattern doesn't match here, but consume no input
       gen_and(pattern)
+    when :grammar
+      gen_grammar(pattern)
     else
       raise "Don't know how to generate code for type #{pattern.type}"
     end
@@ -394,6 +447,32 @@ class Compiler
     @compile_state.add_label_to_next(l2)
   end
 
+  # We have hash table, which we interpret as a grammar. Lua has a strong sense of the "first" element of a table (roughly like a
+  # HashTable). It turns out we do, too (see the "Entry Order" documentation for the Hash class)
+  def gen_grammar(pattern)
+    grammar = pattern.child
+
+    start_symbol, _ = grammar.first
+
+    l2 = @compile_state.next_label
+
+    @compile_state.add_instruction(:call, start_symbol)
+    @compile_state.add_instruction(:jump, l2)
+
+    grammar.each_with_index do |pair, idx|
+      nonterminal, rule_pattern = pair
+      raise "Grammar lists nonterminal #{nonterminal} twice" if @compile_state.index_of_nonterminal(nonterminal)
+
+      @compile_state.register_nonterminal(nonterminal, idx)
+      @compile_state.add_label_to_next(nonterminal)
+
+      gen_first_pass_for(rule_pattern)
+      @compile_state.add_instruction(:return)
+    end
+
+    @compile_state.add_label_to_next(l2)
+  end
+
   def basic_construction(pattern)
     case pattern.type
     when :charset
@@ -417,13 +496,16 @@ class Compiler
         # we always fail
         @compile_state.add_instruction(:fail)
       end
+    when :open_call
+      # This will be resolved in the second pass
+      @compile_state.add_instruction(:open_call, pattern.child)
     else
       raise "#{pattern.type} is not a simple construction"
     end
   end
 
   def link
-    # First go through and generate line numbers for each label
+    # First go through and generate line numbers for each label.
     label_lines = {}
 
     phase1 = @compile_state.first_pass_code
@@ -434,6 +516,7 @@ class Compiler
 
       labels.each do |label|
         raise "Label #{label} has already been used" if label_lines[label]
+
         label_lines[label] = line
       end
     end
@@ -444,9 +527,25 @@ class Compiler
     phase1.each_with_index do |command, line|
       _, op, *args = command
 
+      if op == :open_call
+        # Special handling when we compile for a grammar
+        #
+        # The call we need to make might be represented by a non-negative integer n, indicating the n-th rule in the grammar, or
+        # something else, which is the "name" of the nonterminal and which is (or should be) a symbolic label in our program.
+          open_arg = args.first
+        if open_arg.is_a?(Integer)
+          symb_arg = @compile_state.terminal_with_index(open_arg)
+
+          raise "Nonterminal reference #{open_arg} not found" unless symb_arg
+          args[0] = symb_arg
+        end
+
+        # we also need to replace the op code with a regular :call
+        op = :call
+      end
+
       args = args.map do |arg|
-        fst, = arg
-        if fst == :label
+        if @compile_state.label?(arg)
           absolute = label_lines[arg]
           raise "#{arg} does not appear as a label but #{command} uses is" unless absolute
 
@@ -532,7 +631,7 @@ class ParsingMachine
         # arg1 is an offset for the label to call.
         #
         # Call is like jump, but we push the return address onto the stack first
-        push(:offset, 1)
+        push(:instruction, 1)
         @current_instruction += arg1
       when :return
         @current_instruction = pop(:instruction)

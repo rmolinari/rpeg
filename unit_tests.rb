@@ -151,6 +151,23 @@ class PatternTest < Test::Unit::TestCase
     assert_nil no_z.match("z12")
   end
 
+  def test_grammar
+    # Taken from Ierusalimschy, 4.5
+    #
+    # Matches expressions with balanced parentheses
+    grammar = {
+      S: Pattern.V(:B) + (Pattern.P(1) - Pattern.S("()")),
+      B: Pattern.S("(") * Pattern.V(:S) * Pattern.S(")")
+    }
+
+    pattern = Pattern.P(grammar)
+
+    byebug
+    assert_equal 8, pattern.match("()(()())")
+    assert_equal 8, pattern.match("()(()ab)")
+    assert_nil pattern.match("()()(")
+  end
+
   ########################################
   # Helpers
 
