@@ -16,7 +16,7 @@ require 'ostruct'
 #   - unary & apparently can't be overloaded in Ruby
 #   - this pattern matches when patt appears at the current location, but it doesn't consume any of the input
 class Pattern
-  NODE_TYPES = %i[charset char string any concat ordered_choice repeat not and literal grammar open_call].freeze
+  NODE_TYPES = %i[charset string any concat ordered_choice repeat not and literal grammar open_call].freeze
 
   attr_reader :type, :left, :right, :program
 
@@ -119,6 +119,9 @@ class Pattern
     left
   end
 
+  # sometimes it is more natural to call it the data
+  alias data child
+
   ########################################
   # Operator overloading
   #
@@ -138,8 +141,15 @@ class Pattern
   def +(other)
     other = fix_type(other)
 
-    # TODO: if self and other are both :char or :charset, combine the sets rather than form an :ordered_choice
-    Pattern.new(:ordered_choice, self, other)
+    if type == :charset && other.type == :charset
+      # Take the union of the charsets
+      Pattern.new(:charset, charset_union(data, other.data))
+    elsif type == :ordered_choice
+      # rejigger to make this operation right-associative which makes for more efficient compiled code. See Ierusalimschy 4.2
+      left + (right + other)
+    else
+      Pattern.new(:ordered_choice, self, other)
+    end
   end
 
   # pat ** n means "n or more occurrences of def"
@@ -215,6 +225,10 @@ class Pattern
     else
       Set.new(cs1).subtract(cs2)
     end
+  end
+
+  private def charset_union(cs1, cs2)
+    self.class.send(:charset_union, cs1, cs2)
   end
 
   def initialize(type, left, right = nil)
@@ -658,12 +672,11 @@ class ParsingMachine
         @capture_list = captures
         @current_instruction += arg1
       when :span
-        # Special instruction for when we are repeating over a charset, which is common
-        if arg1.include?(@subject[@current_subject_position])
-          @current_subject_position += 1
-        else
-          @current_instruction += 1
-        end
+        # Special instruction for when we are repeating over a charset, which is common. We just consume as many maching characters
+        # as there are. This never fails as we might just match zero
+        @current_subject_position += 1 while arg1.include?(@subject[@current_subject_position])
+
+        @current_instruction += 1
       when :fail
         # We trigger the fail routine
         @current_instruction = :fail
