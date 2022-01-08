@@ -170,10 +170,10 @@ class Pattern
     if type == :charset && other.type == :charset
       new_cs = charset_difference(child, other.child)
       if new_cs.is_a?(Set) && new_cs.empty?
-        # always fails
-        Pattern.P(false)
+        # always fail
+        return Pattern.P(false)
       else
-        Pattern.new(:charset, new_cs)
+        return Pattern.new(:charset, new_cs)
       end
     end
 
@@ -204,10 +204,10 @@ class Pattern
       elsif cs2.min <= cs1.min && cs2.max >= cs1.max
         # Empty set!
         Set.new
-        elseif cs2.min <= cs1.min
-        (cs2.max)..(cs1.max)
+      elsif cs2.min <= cs1.min
+        (cs2.max)...(cs1.max)
       else
-        (cs1.min)..(cs2.min)
+        (cs1.min)...(cs2.min)
       end
     else
       Set.new(cs1).subtract(cs2)

@@ -152,20 +152,25 @@ class PatternTest < Test::Unit::TestCase
   end
 
   def test_grammar
-    # Taken from Ierusalimschy, 4.5
-    #
-    # Matches expressions with balanced parentheses
+    left = Pattern.P("(")
+    right = Pattern.P(")")
+    non_parens = Pattern.P(1) - (left + right)
+
     grammar = {
-      S: Pattern.V(:B) + (Pattern.P(1) - Pattern.S("()")),
-      B: Pattern.S("(") * Pattern.V(:S) * Pattern.S(")")
+      T: Pattern.V(:S) * Pattern.P(-1),
+      S: ((left * Pattern.V(:S) * right) + non_parens)**0
     }
 
     pattern = Pattern.P(grammar)
 
-    byebug
-    assert_equal 8, pattern.match("()(()())")
-    assert_equal 8, pattern.match("()(()ab)")
-    assert_nil pattern.match("()()(")
+    assert_equal 8, pattern.match("(((())))")
+    assert_equal 8, pattern.match("((()()))")
+    assert_equal 8, pattern.match("((()ab))")
+
+    str = "(define (a foo) (car (cdr a)))"
+    assert_equal str.length, pattern.match(str)
+
+    assert_equal nil,  pattern.match("(aa()()")
   end
 
   ########################################
