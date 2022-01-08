@@ -29,7 +29,6 @@ class Pattern
     # Take argument and turn it into a pattern
     #
     # TODO (from the lpeg homepage)
-    #  - If the argument is a table [roughly a HashTable in Ruby], it is interpreted as a grammar
     #  - If the argument is a function, returns a pattern equivalent to a match-time capture over the empty string.
     def P(arg)
       case arg
@@ -63,6 +62,7 @@ class Pattern
 
       check = lambda do |str|
         raise "Bad data #{str} for Pattern#R" unless str.is_a?(String) && str.size == 2
+
         (str[0])..(str[1])
       end
 
@@ -85,7 +85,7 @@ class Pattern
       if cs1.is_a?(Set)
         cs1.merge(cs2)
       elsif cs2.is_a?(Range)
-        #both ranges
+        # both ranges
         if cs1.max < cs2.min || cs2.max < cs1.min
           # disjoint
           Set.new(cs1) + Set.new(cs2)
@@ -119,13 +119,13 @@ class Pattern
 
   # p1 * p2 is matches p1 followed by p2
   def *(other)
-    check_type(other)
+    other = fix_type(other)
     Pattern.new(:concat, self, other)
   end
 
   # p1 + p2 is ordered choice: if p1 matches we match, otherwise try matching on p2
   def +(other)
-    check_type(other)
+    other = fix_type(other)
 
     # TODO: if self and other are both :char or :charset, combine the sets rather than form an :ordered_choice
     Pattern.new(:ordered_choice, self, other)
@@ -135,15 +135,15 @@ class Pattern
   #
   # TODO:
   # - negative values: -n means at most n occurrences
-  def **(num)
-    raise "Power (repetition) currently supported only for non-negative integers" unless num.is_a?(Integer) && !num.negative?
+  def **(other)
+    raise "Power (repetition) currently supported only for non-negative integers" unless other.is_a?(Integer) && !other.negative?
 
     # So, we represent this by a sequence of num occurrences, followed by a zero-or-more
 
     patt = Pattern.new(:repeat, self) # this repeats 0 or more times
-    while num > 0
+    while other.positive?
       patt = self * patt
-      num -= 1
+      other -= 1
     end
     patt
   end
@@ -165,16 +165,13 @@ class Pattern
   #
   # Special case: if both patterns are charsets we replace with a single charset
   def -(other)
-    check_type(other)
+    other = fix_type(other)
 
     if type == :charset && other.type == :charset
       new_cs = charset_difference(child, other.child)
-      if new_cs.is_a?(Set) && new_cs.empty?
-        # always fail
-        return Pattern.P(false)
-      else
-        return Pattern.new(:charset, new_cs)
-      end
+      return Pattern.P(false) if new_cs.is_a?(Set) && new_cs.empty?
+
+      return Pattern.new(:charset, new_cs)
     end
 
     # Otherwise we use -p2 * p1: p2 doesn't match here followed by p1 does match here
@@ -188,8 +185,10 @@ class Pattern
     left
   end
 
-  private def check_type(other)
-    raise "Cannot coerce #{pattern} into a Pattern" unless other.is_a? Pattern
+  private def fix_type(other)
+    return other if other.is_a?(Pattern)
+
+    Pattern.P(other) # see what we can do
   end
 
   # Each is either a Set or a Range
@@ -238,9 +237,7 @@ class Pattern
       left.must_not.empty?
     when :open_call
       right.must_be nil
-      if left.is_a?(Integer)
-        left.must_not.negative?
-      end
+      left.must_not.negative? if left.is_a?(Integer)
     end
   end
 end
@@ -306,6 +303,7 @@ class Compiler
 
     def nonterminal_with_index(index)
       raise "Cannot look nonterminal with negative index" if index < 0
+
       @nonterminal_indices[index]
     end
 
@@ -342,9 +340,7 @@ class Compiler
     link
   end
 
-  private
-
-  def gen_first_pass_for(pattern)
+  private def gen_first_pass_for(pattern)
     # brainless for now
     case pattern.type
     when :charset, :string, :any, :concat, :literal, :open_call
@@ -380,7 +376,7 @@ class Compiler
   # (and Ruby) while we get more efficient code if we analyze it as a right-associative combination.
   #
   # For now just do the straightforward thing
-  def gen_ordered_choice(pattern)
+  private def gen_ordered_choice(pattern)
     p1 = pattern.left.must_be
     p2 = pattern.right.must_be
 
@@ -396,7 +392,7 @@ class Compiler
   end
 
   # See Ierusalimschy, section 4.3
-  def gen_repeat(pattern)
+  private def gen_repeat(pattern)
     l1 = @compile_state.next_label
     l2 = @compile_state.next_label
 
@@ -420,7 +416,7 @@ class Compiler
   #     <p>
   #     FailTwice
   # L1: ...
-  def gen_not(pattern)
+  private def gen_not(pattern)
     l1 = @compile_state.next_label # get a label
 
     @compile_state.add_instruction(:choice, l1)
@@ -436,7 +432,7 @@ class Compiler
   #     BackCommit L2
   # L1: Fail
   # L2: ...
-  def gen_and(pattern)
+  private def gen_and(pattern)
     l1 = @compile_state.next_label
     l2 = @compile_state.next_label
 
@@ -449,7 +445,7 @@ class Compiler
 
   # We have hash table, which we interpret as a grammar. Lua has a strong sense of the "first" element of a table (roughly like a
   # HashTable). It turns out we do, too (see the "Entry Order" documentation for the Hash class)
-  def gen_grammar(pattern)
+  private def gen_grammar(pattern)
     grammar = pattern.child
 
     start_symbol, _ = grammar.first
@@ -473,7 +469,7 @@ class Compiler
     @compile_state.add_label_to_next(l2)
   end
 
-  def basic_construction(pattern)
+  private def basic_construction(pattern)
     case pattern.type
     when :charset
       @compile_state.add_instruction(:charset, Set.new(pattern.child))
@@ -504,7 +500,7 @@ class Compiler
     end
   end
 
-  def link
+  private def link
     # First go through and generate line numbers for each label.
     label_lines = {}
 
@@ -532,11 +528,11 @@ class Compiler
         #
         # The call we need to make might be represented by a non-negative integer n, indicating the n-th rule in the grammar, or
         # something else, which is the "name" of the nonterminal and which is (or should be) a symbolic label in our program.
-          open_arg = args.first
+        open_arg = args.first
         if open_arg.is_a?(Integer)
           symb_arg = @compile_state.terminal_with_index(open_arg)
-
           raise "Nonterminal reference #{open_arg} not found" unless symb_arg
+
           args[0] = symb_arg
         end
 
@@ -682,18 +678,16 @@ class ParsingMachine
     end
   end
 
-  private
-
-  def done!
+  private def done!
     @done = true
   end
 
-  def done?
+  private def done?
     @done
   end
 
   # Not for the FAIL op_code, but for when the instruction pointer is :fail
-  def handle_fail_ptr
+  private def handle_fail_ptr
     # special handling
     if @stack.empty?
       @success = false
@@ -718,7 +712,7 @@ class ParsingMachine
   # We push either
   # - an instruction pointer, which may later be used to jump, etc, or
   # - the current state with an offset, which is the [instr ptr + offset, subject_pos, capture list] triple. Let's tag them for sanity's sake
-  def push(type, offset)
+  private def push(type, offset)
     raise "must push something" unless offset
 
     case type
@@ -734,7 +728,7 @@ class ParsingMachine
   # Pop the top thing on the stack and return it (not including the tag). If expecting is non nil check that it equals the tag
   #
   # Raise if stack is empty
-  def pop(expecting = nil)
+  private def pop(expecting = nil)
     raise "Nothing in stack to pop" if @stack.empty?
 
     tag, val = @stack.pop
@@ -748,7 +742,7 @@ class ParsingMachine
   # affecting the stack
   #
   # If expecting is given make sure that the top of the stack is of the given type
-  def peek(expecting = nil)
+  private def peek(expecting = nil)
     return nil if @stack.empty?
 
     tag, val = @stack.last

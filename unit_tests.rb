@@ -152,14 +152,7 @@ class PatternTest < Test::Unit::TestCase
   end
 
   def test_grammar
-    left = Pattern.P("(")
-    right = Pattern.P(")")
-    non_parens = Pattern.P(1) - (left + right)
-
-    grammar = {
-      T: Pattern.V(:S) * Pattern.P(-1),
-      S: ((left * Pattern.V(:S) * right) + non_parens)**0
-    }
+    grammar = balanced_parens_grammar
 
     pattern = Pattern.P(grammar)
 
@@ -173,8 +166,44 @@ class PatternTest < Test::Unit::TestCase
     assert_equal nil,  pattern.match("(aa()()")
   end
 
+  def test_coercion
+    # Match "abc"
+    start_with_a = Pattern.P("a")
+    patt = start_with_a * "b" * "c"
+
+    assert_equal 3, patt.match("abc")
+    assert_nil patt.match("ab")
+
+    only_a = start_with_a * -1
+    assert_equal 1, only_a.match("a")
+    assert_nil patt.match("")
+    assert_nil patt.match("aa")
+
+    a_or_b = start_with_a + "b"
+    assert_equal 1, a_or_b.match("a")
+    assert_equal 1, a_or_b.match("b")
+    assert_equal 1, a_or_b.match("bb")
+    assert_equal 1, a_or_b.match("aa")
+    assert_nil a_or_b.match("")
+    assert_nil a_or_b.match("c")
+
+    a_then_balanced = start_with_a * balanced_parens_grammar
+    assert_equal 9, a_then_balanced.match("a(((())))")
+    assert_nil a_then_balanced.match("(((())))")
+  end
+
   ########################################
   # Helpers
+
+  def balanced_parens_grammar
+    left = Pattern.P("(")
+    right = Pattern.P(")")
+    non_parens = Pattern.P(1) - (left + right)
+    {
+      T: Pattern.V(:S) * Pattern.P(-1),
+      S: ((left * Pattern.V(:S) * right) + non_parens)**0
+    }
+  end
 
   # [a-zA-Z_][a-zA-Z_0-9]*
   def identifier_pattern

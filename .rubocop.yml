@@ -3,3 +3,9 @@ AllCops:
 
 Layout/LineLength:
   Max: 132
+
+Style/AccessModifierDeclarations:
+  EnforcedStyle: inline
+
+Style/StringLiterals:
+  Enabled: false
