@@ -198,9 +198,9 @@ class PatternTest < Test::Unit::TestCase
   def balanced_parens_grammar
     left = Pattern.P("(")
     right = Pattern.P(")")
-    non_parens = Pattern.P(1) - (left + right)
+    non_parens = 1 - (left + right)
     {
-      T: Pattern.V(:S) * Pattern.P(-1),
+      T: Pattern.V(:S) * -1,
       S: ((left * Pattern.V(:S) * right) + non_parens)**0
     }
   end
@@ -208,7 +208,7 @@ class PatternTest < Test::Unit::TestCase
   # [a-zA-Z_][a-zA-Z_0-9]*
   def identifier_pattern
     @identifier_pattern ||= begin
-                              alpha = Pattern.R("az", "AZ") + Pattern.S("_")
+                              alpha = Pattern.R("az", "AZ") + "_"
                               digit = Pattern.R("09")
                               alphanum = alpha + digit
 

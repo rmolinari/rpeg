@@ -112,10 +112,21 @@ class Pattern
     end
   end
 
+  # If left is defined and right is nil - so we have a unary op - we can get child here
+  def child
+    raise 'Pattern is not unary' if right
+
+    left
+  end
+
   ########################################
   # Operator overloading
   #
   # The LPEG library makes heavy use of operator overriding in Lua to combine patterns in a convenient way. We will follow.
+
+  def coerce(other)
+    [Pattern.P(other), self]
+  end
 
   # p1 * p2 is matches p1 followed by p2
   def *(other)
@@ -176,13 +187,6 @@ class Pattern
 
     # Otherwise we use -p2 * p1: p2 doesn't match here followed by p1 does match here
     -other * self
-  end
-
-  # If left is defined and right is nil - so we have a unary op - we can get child here
-  def child
-    raise 'Pattern is not unary' if right
-
-    left
   end
 
   private def fix_type(other)
