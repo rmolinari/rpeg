@@ -131,7 +131,7 @@ class Pattern
     [Pattern.P(other), self]
   end
 
-  # p1 * p2 is matches p1 followed by p2
+  # p1 * p2 means p1 followed by p2
   def *(other)
     other = fix_type(other)
     Pattern.new(:concat, self, other)
