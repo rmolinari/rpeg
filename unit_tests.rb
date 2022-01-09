@@ -179,7 +179,13 @@ class PatternTest < Test::Unit::TestCase
     assert_nil patt.match("")
     assert_nil patt.match("aa")
 
-    a_or_b = start_with_a + "b"
+    anything_then_a = 1 * start_with_a
+    assert_equal 2, anything_then_a.match("%a")
+    assert_equal 2, anything_then_a.match("aa")
+    assert_equal nil, anything_then_a.match("a")
+
+    byebug
+    a_or_b = "b" + start_with_a
     assert_equal 1, a_or_b.match("a")
     assert_equal 1, a_or_b.match("b")
     assert_equal 1, a_or_b.match("bb")

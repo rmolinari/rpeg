@@ -12,7 +12,7 @@ require 'ostruct'
 #
 # Top-level differences from LPEG:
 #
-# - and patterns in LPEG are &patt but +patt here
+# - and patterns in LPEG are #patt (&patt in the first version) but +patt here
 #   - unary & apparently can't be overloaded in Ruby
 #   - this pattern matches when patt appears at the current location, but it doesn't consume any of the input
 class Pattern
@@ -127,6 +127,7 @@ class Pattern
   #
   # The LPEG library makes heavy use of operator overriding in Lua to combine patterns in a convenient way. We will follow.
 
+  # This only happens if other is a Numeric type, which is annoying
   def coerce(other)
     [Pattern.P(other), self]
   end
@@ -260,6 +261,34 @@ class Pattern
   end
 end
 
+module Analysis
+  extend self
+
+  # The is lpeg's checkaux from lpcode.c. Comment from that function (reformatted):
+  #
+  # /*
+  # ** Checks how a pattern behaves regarding the empty string, in one of two different ways:
+  #
+  # ** - A pattern is *nullable* if it can match without consuming any character;
+  # ** - A pattern is *nofail* if it never fails for any string (including the empty string).
+  #
+  # ** The difference is only for predicates and run-time captures; for other patterns, the two properties are equivalent.  (With
+  # ** predicates, &'a' is nullable but not nofail. Of course, nofail => nullable.)
+  #
+  # ** These functions are all convervative in the following way:
+  # **    p is nullable => nullable(p)
+  # **    nofail(p) => p cannot fail
+  #
+  # ** The function assumes that TOpenCall is not nullable; this will be checked again when the grammar is fixed.  Run-time captures
+  # ** can do whatever they want, so the result is conservative.
+  # */
+  #
+  # Note that we currently can't check again when the OpenCall elements are resolved, because at that point we have compiled the VM
+  # code. I must look at how LPEG does it.
+  def check_pred(pattern)
+  end
+end
+
 class Compiler
   class State
     attr_reader :first_pass_code
@@ -388,12 +417,6 @@ class Compiler
   #     Commit L2
   # L1: <p2>
   # L2: ...
-  #
-  # TODO: optimization
-  # There are optimizations available for multiple choices p1 + p2 + p3 + ..., based on the fact that + is left-associative in Lua
-  # (and Ruby) while we get more efficient code if we analyze it as a right-associative combination.
-  #
-  # For now just do the straightforward thing
   private def gen_ordered_choice(pattern)
     p1 = pattern.left.must_be
     p2 = pattern.right.must_be
