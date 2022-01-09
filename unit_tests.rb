@@ -184,14 +184,11 @@ class PatternTest < Test::Unit::TestCase
     assert_equal 2, anything_then_a.match("aa")
     assert_equal nil, anything_then_a.match("a")
 
-    byebug
-    a_or_b = "b" + start_with_a
-    assert_equal 1, a_or_b.match("a")
-    assert_equal 1, a_or_b.match("b")
-    assert_equal 1, a_or_b.match("bb")
-    assert_equal 1, a_or_b.match("aa")
-    assert_nil a_or_b.match("")
-    assert_nil a_or_b.match("c")
+    b_then_a = "b" * start_with_a
+    assert_equal 2, b_then_a.match("ba")
+    assert_equal 2, b_then_a.match("baa")
+    assert_nil b_then_a.match("b")
+    assert_nil b_then_a.match("a")
 
     a_then_balanced = start_with_a * balanced_parens_grammar
     assert_equal 9, a_then_balanced.match("a(((())))")

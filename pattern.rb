@@ -15,6 +15,10 @@ require 'ostruct'
 # - and patterns in LPEG are #patt (&patt in the first version) but +patt here
 #   - unary & apparently can't be overloaded in Ruby
 #   - this pattern matches when patt appears at the current location, but it doesn't consume any of the input
+# - repeating patterns still use exponentiation, but it now looks like patt**n rather than patt^n because of Ruby's syntax
+#   - so patt**n means
+#     - "n or more occurrences of patt" when n is non-negative
+#     - "fewer than -n occurrences of patt" when n is negative
 class Pattern
   NODE_TYPES = %i[charset string any concat ordered_choice repeat not and literal grammar open_call].freeze
 
@@ -23,6 +27,8 @@ class Pattern
   class << self
     # Match any character in string (regarded as a set of characters)
     def S(string)
+      return P(false) if string.empty?
+
       new(:charset, Set.new(string.chars))
     end
 
@@ -58,7 +64,9 @@ class Pattern
 
     # Given a 2-char string xy, the ASCII range x..y. Each argument gives a range and we match on their union
     def R(*ranges)
-      raise 'No data given!' if ranges.empty?
+      return P(false) if ranges.empty?
+
+      # raise 'No data given!' if ranges.empty?
 
       check = lambda do |str|
         raise "Bad data #{str} for Pattern#R" unless str.is_a?(String) && str.size == 2
@@ -79,6 +87,10 @@ class Pattern
     #  - a value that will be the key in the final grammar - a Hash - of the rule being referenced
     def V(ref)
       Pattern.new(:open_call, ref)
+    end
+
+    def match(thing, string)
+      P(thing).match(string)
     end
 
     private def charset_union(cs1, cs2)
@@ -105,11 +117,9 @@ class Pattern
     machine = ParsingMachine.new(@program, str)
     machine.run
 
-    if machine.success?
-      machine.final_index
-    else
-      nil
-    end
+    return machine.final_index if machine.success?
+
+    # otherwise return nil
   end
 
   # If left is defined and right is nil - so we have a unary op - we can get child here
@@ -135,6 +145,14 @@ class Pattern
   # p1 * p2 means p1 followed by p2
   def *(other)
     other = fix_type(other)
+
+    # true is the identity for *
+    if other.type == :literal && other.child == true
+      return self
+    elsif type == :literal && child == true
+      return other
+    end
+
     Pattern.new(:concat, self, other)
   end
 
@@ -148,6 +166,9 @@ class Pattern
     elsif type == :ordered_choice
       # rejigger to make this operation right-associative which makes for more efficient compiled code. See Ierusalimschy 4.2
       left + (right + other)
+    elsif other.type == :literal && other.child == false
+      # false is the right-identity for +
+      self
     else
       Pattern.new(:ordered_choice, self, other)
     end
@@ -156,16 +177,30 @@ class Pattern
   # pat ** n means "n or more occurrences of def"
   #
   # TODO:
-  # - negative values: -n means at most n occurrences
+  # - negative values: -n means at up to occurrences
   def **(other)
-    raise "Power (repetition) currently supported only for non-negative integers" unless other.is_a?(Integer) && !other.negative?
+    n = other
 
-    # So, we represent this by a sequence of num occurrences, followed by a zero-or-more
-
-    patt = Pattern.new(:repeat, self) # this repeats 0 or more times
-    while other.positive?
-      patt = self * patt
-      other -= 1
+    if n >= 0
+      # So, we represent this by a sequence of num occurrences, followed by a zero-or-more
+      patt = Pattern.new(:repeat, self) # this repeats 0 or more times
+      while n.positive?
+        patt = self * patt
+        n -= 1
+      end
+    else
+      # Scratch:
+      #
+      #  E(1) = patt + true # up to 1
+      #  E(2) = patt * (patt + true) + true # up to 2
+      #       = patt * E(1) + true
+      # Up to -n occurrences
+      n = -n
+      patt = Pattern.P(true)
+      while n.positive?
+        patt = self * patt + true
+        n -= 1
+      end
     end
     patt
   end
@@ -259,6 +294,46 @@ class Pattern
       left.must_not.negative? if left.is_a?(Integer)
     end
   end
+
+  ########################################
+  # Experimental monkeypatching
+  #
+  # Very annoyingly, Ruby's #coerce mechanism is only used by the Numeric types. This means things like "a" + Pattern.P(true) won't
+  # work properly. The only way I can think to make it work - as it does in LPEG - is to monkeypatch String, TrueClass, FalseClass,
+  # etc.
+
+  # Trying the technique from https://stackoverflow.com/a/61438012/1299011
+  module NonNumericOverloadExtension
+    [:+, :*, :-].each do |sym|
+      define_method sym do |other|
+        return Pattern.P(self).send(sym, other) if other.is_a?(Pattern)
+
+        super(other)
+      end
+    end
+  end
+
+  [::String, ::TrueClass, ::FalseClass, ::Hash].each do |klass|
+    klass.class_eval do
+      prepend NonNumericOverloadExtension
+    end
+  end
+
+  # class ::String
+  #   prepend NonNumericOverloadExtension
+  # end
+
+  # class ::TrueClass
+  #   prepend NonNumericOverloadExtension
+  # end
+
+  # class ::FalseClass
+  #   prepend NonNumericOverloadExtension
+  # end
+
+  # class ::Hash
+  #   prepend NonNumericOverloadExtension
+  # end
 end
 
 module Analysis
@@ -437,18 +512,18 @@ class Compiler
     l1 = @compile_state.next_label
     l2 = @compile_state.next_label
 
-    @compile_state.add_instruction(:choice, l2)
-    @compile_state.add_label_to_next(l1)
-
-    # Special, quicker handling when the thing we are repeated over is a charset. See Ierusalimschy 4.3
     if pattern.child.type == :charset
+      # Special, quicker handling when the thing we are repeated over is a charset. See Ierusalimschy 4.3
       @compile_state.add_instruction(:span, pattern.child.child)
     else
-      gen_first_pass_for(pattern.child)
-    end
+      @compile_state.add_instruction(:choice, l2)
+      @compile_state.add_label_to_next(l1)
 
-    @compile_state.add_instruction(:partial_commit, l1)
-    @compile_state.add_label_to_next(l2)
+      gen_first_pass_for(pattern.child)
+
+      @compile_state.add_instruction(:partial_commit, l1)
+      @compile_state.add_label_to_next(l2)
+    end
   end
 
   # See Ierusalimschy section 4.4
