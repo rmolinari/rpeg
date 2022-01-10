@@ -119,7 +119,7 @@ class Pattern
   def match(str)
     #@program ||= Compiler.new(self).compile
 
-    machine = ParsingMachine.new(program + [:end], str)
+    machine = ParsingMachine.new(program + [Instruction.new(:end)], str)
     machine.run
 
     return machine.final_index if machine.success?
@@ -317,58 +317,58 @@ class Pattern
     prog = []
     case type
     when :charset
-      prog << [:charset, Set.new(data)]
+      prog << Instruction.new(:charset, Set.new(data))
     when :string
       data.chars.each do |ch|
-        prog << [:char, ch]
+        prog << Instruction.new(:char, ch)
       end
     when :any
-      prog << [:any, data]
+      prog << Instruction.new(:any, data)
     when :seq
 
       # Just concatenate the code
       prog = left.program + right.program
     when :literal
       # if data = true then we always succeed, which means we don't have to do anything at all
-      prog << [:fail] unless data
+      prog << Instruction.new(:fail) unless data
     when :open_call
       # we resolved these to :call when the grammar node was created. So if we see one now it is because it was not contained in a
       # grammar.
       raise ':open_call node appears outside of a grammar'
     when :call
-      prog << [:call, left]
+      prog << Instruction.new(:call, left)
     when :ordered_choice
       p1 = left.program
       p2 = right.program
 
-      prog << [:choice, 2 + p1.size]
+      prog << Instruction.new(:choice, 2 + p1.size)
       prog += p1
-      prog << [:commit, 1 + p2.size]
+      prog << Instruction.new(:commit, 1 + p2.size)
       prog += p2
     when :repeat
       p = child.program
 
       if child.type == :charset
         # Special, quicker handling when the thing we are repeated over is a charset. See Ierusalimschy 4.3
-        prog << [:span, child.data]
+        prog << Instruction.new(:span, child.data)
       else
-        prog << [:choice, 2 + p.size]
+        prog << Instruction.new(:choice, 2 + p.size)
         prog += p
-        prog << [:partial_commit, -p.size]
+        prog << Instruction.new(:partial_commit, -p.size)
       end
     when :not
       p = child.program
 
-      prog << [:choice, 2 + p.size]
+      prog << Instruction.new(:choice, 2 + p.size)
       prog += p
-      prog << [:fail_twice]
+      prog << Instruction.new(:fail_twice)
     when :and
       p = child.program
 
-      prog << [:choice, 2 + p.size]
+      prog << Instruction.new(:choice, 2 + p.size)
       prog += p
-      prog << [:back_commit, 2]
-      prog << [:fail]
+      prog << Instruction.new(:back_commit, 2)
+      prog << Instruction.new(:fail)
     when :grammar
       start_line_of_nonterminal = {}
       full_rule_code = []
@@ -376,40 +376,40 @@ class Pattern
       child.each_with_index do |rule, idx|
         nonterminal, rule_pattern = rule
         start_line_of_nonterminal[nonterminal] = 2 + full_rule_code.size
-        full_rule_code += rule_pattern.program + [[:return]]
+        full_rule_code += rule_pattern.program + [Instruction.new(:return)]
       end
 
-      prog << [:call, @nonterminal_by_index[0]] # call the first nonterminal
-      prog << [:jump, 1 + full_rule_code.size] # we are done: jump to the line after the grammar's program
+      prog << Instruction.new(:call, @nonterminal_by_index[0]) # call the first nonterminal
+      prog << Instruction.new(:jump, 1 + full_rule_code.size) # we are done: jump to the line after the grammar's program
       prog += full_rule_code
 
       # Now close the :call instructions. THe :open_call nodes were analyzed when the :grammar node was created but we still need to
       # calculate line offsets
       prog.each_with_index do |instr, idx|
-        op, arg1, = instr
-        next unless op == :call
+        next unless instr.op_code == :call
+
+        nonterminal = instr.arg1
 
         # arg1 is the nonterminal
-        start_line = start_line_of_nonterminal[arg1]
-        raise "Nonterminal #{arg1} does not have a rule in grammar" unless start_line
+        start_line = start_line_of_nonterminal[nonterminal]
+        raise "Nonterminal #{nonterminal} does not have a rule in grammar" unless start_line
 
         offset = start_line - idx
 
         # We replaced :open_call with :call. But, if the following instruction is a :return this a tail call and we can eliminate
         # the stack push by using a :jump instead of the call. This leaves the following :return a dead statement which we will
         # never reach. We change it to a bogus op code as a sanity check: if the VM ever reaches it we have made an error somewhere.
-        if prog[idx + 1] && prog[idx + 1].first == :return
-          prog[idx] = [:jump, offset]
-          prog[idx + 1] = [:unreachable]
+        if prog[idx + 1] && prog[idx + 1].op_code == :return
+          prog[idx] = Instruction.new(:jump, offset)
+          prog[idx + 1] = Instruction.new(:unreachable)
         else
-          prog[idx] = [:call, offset]
+          prog[idx] = Instruction.new(:call, offset)
         end
       end
     else
       raise "Unknown pattern type #{type}"
     end
 
-    # @program = cleaned_up.call(prog).map(&:freeze).freeze
     @program = prog.map(&:freeze).freeze
   end
 
@@ -633,8 +633,31 @@ module Analysis
   end
 end
 
-class ParsingMachine
+# Instances are generated during program generation in Pattern and consumed in the ParsingMachine
+class Instruction
   OP_CODES = %i[char charset any jump choice call return commit back_commit partial_commit span end fail fail_twice unreachable].freeze
+  OP_WIDTH = OP_CODES.map(&:length).max
+
+  attr_reader :op_code, :arg1, :arg2
+
+  def initialize(op_code, arg1 = nil, arg2 = nil)
+    raise "Bad instruction op_code #{op_code}" unless OP_CODES.include?(op_code)
+    raise 'Cannot specify arg2 for Instruction without arg1' if arg2 && !arg1
+
+    @op_code = op_code
+    @arg1 = arg1
+    @arg2 = arg2
+  end
+
+  def to_s
+    str = "#{op_code.to_s.capitalize.rjust(OP_WIDTH + 1)}"
+    str << " #{arg1}" if arg1
+    str << ", #{arg2}" if arg2
+    str
+  end
+end
+
+class ParsingMachine
   # subject is the string to match against
 
   attr_reader :final_index
@@ -665,8 +688,8 @@ class ParsingMachine
 
       raise "current instruction #{@current_instruction} is out of range" unless (0...@prog_len).include?(@current_instruction)
 
-      op_code, arg1, _arg2 = @program[@current_instruction]
-      raise "bad opcode #{op_code}" unless OP_CODES.include?(op_code)
+      instr = @program[@current_instruction].must_be_a(Instruction)
+      # op_code, arg1, _arg2 = @program[@current_instruction]
 
       match_char_p = lambda do |success|
         if success
@@ -677,40 +700,40 @@ class ParsingMachine
         end
       end
 
-      case op_code
+      case instr.op_code
       when :char
         # arg1 is a single character
-        match_char_p.call(arg1 == @subject[@current_subject_position])
+        match_char_p.call(instr.arg1 == @subject[@current_subject_position])
       when :charset
-        match_char_p.call(arg1.include?(@subject[@current_subject_position]))
+        match_char_p.call(instr.arg1.include?(@subject[@current_subject_position]))
       when :any
         # arg1 is the number of chars we are looking for
-        if @current_subject_position + arg1 <= @subject.size
+        if @current_subject_position + instr.arg1 <= @subject.size
           @current_instruction += 1
-          @current_subject_position += arg1
+          @current_subject_position += instr.arg1
         else
           @current_instruction = :fail
         end
       when :jump
         # arg1 is an offset for the label to jump to
-        @current_instruction += arg1
+        @current_instruction += instr.arg1
       when :choice
         # arg1 is the offset for the other side of the choice, which we push onto the stack
-        push(:state, arg1)
+        push(:state, instr.arg1)
         @current_instruction += 1
       when :call
         # arg1 is an offset for the label to call.
         #
         # Call is like jump, but we push the return address onto the stack first
         push(:instruction, 1)
-        @current_instruction += arg1
+        @current_instruction += instr.arg1
       when :return
         @current_instruction = pop(:instruction)
       when :commit
         # we pop and discard the top of the stack (which must be a triple) and then do the jump given by arg1. Even though we are
         # discarding it check that it was a full state as a sanity check.
         _ = pop(:state)
-        @current_instruction += arg1
+        @current_instruction += instr.arg1
       when :partial_commit
         # Sort of a combination of commit (which pops) and choice (which pushes), but we just tweak the top of the stack. See
         # Ierusalimschy, sec 4.3
@@ -720,18 +743,18 @@ class ParsingMachine
         stack_top[1] = @current_subject_position
         stack_top[2] = @capture_list.clone
 
-        @current_instruction += arg1
+        @current_instruction += instr.arg1
       when :back_commit
         # A combination of a fail and a commit. We backtrack, but then jump to the specified instruction rather than using the
         # backtrack label. It's used for the :and pattern. See Ierusalimschy, 4.4
         _, subject_pos, captures = pop(:state)
         @current_subject_position = subject_pos
         @capture_list = captures
-        @current_instruction += arg1
+        @current_instruction += instr.arg1
       when :span
         # Special instruction for when we are repeating over a charset, which is common. We just consume as many maching characters
         # as there are. This never fails as we might just match zero
-        @current_subject_position += 1 while arg1.include?(@subject[@current_subject_position])
+        @current_subject_position += 1 while instr.arg1.include?(@subject[@current_subject_position])
 
         @current_instruction += 1
       when :fail
