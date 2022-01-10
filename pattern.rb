@@ -524,35 +524,38 @@ module Analysis
   def check_pred(pattern, pred)
     raise "Bad check predicate #{pred}" unless CHECK_PREDICATES.include?(pred)
 
-    case pattern.type
-    when :char, :charset, :any, :open_call
-      # Not nullable; for open_call this is a blind assumption
-      false
-    when :literal
-      # false is not nullable, true is nofail
-      pattern.data
-    when :not
-      # can match empty, but can fail
-      !(pred == :nofail)
-    when :not
-      # can match empty; can fail exactly when body can
-      if pred == :nullable
-        true
+    the_pattern = pattern
+    # loop to eliminate some tail calls, as in the LPEG code. I don't think it's really necessary - as my implementation is not
+    # going to be fast overall - but let's try a new technique.
+    loop do
+      case pattern.type
+      when :char, :charset, :any, :open_call
+        # Not nullable; for open_call this is a blind assumption
+        return false
+      when :literal
+        # false is not nullable, true is nofail
+        return pattern.data
+      when :not
+        # can match empty, but can fail
+        return (pred != :nofail)
+      when :and
+        # can match empty; can fail exactly when body can
+        return true if pred == :nullable
+
+        the_pattern = pattern.child
+      when :concat
+        return false unless check_pred(pattern.left, pred)
+
+        the_pattern = pattern.right
+      when :ordered_choice
+        return true if check_pred(pattern.left, pred)
+
+        the_pattern = pattern.right
+n      when :call
+        the_pattern = pattern.child
       else
-        check_pred(pattern.child)
+        raise "Bad pattern type #{pattern.type}"
       end
-    when :concat
-      return false unless check_pred(pattern.left, pred)
-
-      check_pred(pattern.right, pred)
-    when :ordered_choice
-      return true if check_pred(patter.left, pred)
-
-      check_pred(pattern.right, pred)
-    when :call
-      check_pred(pattern.child, pred)
-    else
-      raise "Bad pattern type #{pattern.type}"
     end
   end
 

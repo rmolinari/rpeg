@@ -75,7 +75,22 @@ class TestsFromLpegCode < Test::Unit::TestCase
 
     assert m.match(digit**0 * letter * digit * eos, "1298a1")
     assert_nil m.match(digit**0 * letter * eos, "1257a1")
+
+    # Note we use index 0 rather than 1 because Lua is 1-based
+    b = { A: "(" * (((1 - m.S("()")) + +m.P("(") * m.V(0))**0) * ")" }
+
+    assert m.match(b, "(al())()")
+    assert_nil m.match(b * eos, "(al())()")
+    assert m.match(b * eos, "((al())()(é))")
+    assert_nil m.match(b, "(al()()")
+
+    assert_nil m.match(letter**1 - "for", "foreach")
+    assert m.match(letter**1 - ("for" * eos), "foreach")
+    assert_nil m.match(letter**1 - ("for" * eos), "for")
   end
+
+  ## ^^
+  ## - up to l.151 in test.lua
 
   # Helpers to make it easier to use the tests copied from the Lua code
   def m
