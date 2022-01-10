@@ -542,7 +542,7 @@ class Pattern
       raise "Nonterminal #{nonterminal} appears twice in grammar" if @nonterminal_indices[nonterminal]
 
       rule = Pattern.new(:rule, rule_pattern, extra: nonterminal)
-      #grammar_hash[nonterminal] = rule
+
       rule_list << rule
       rule_hash[nonterminal] = rule
 
@@ -552,6 +552,8 @@ class Pattern
 
     @left = rule_list
 
+    # TODO: redo this. I don't like the idea of using a vistor to find the open_call nodes while we are modifiying in-place. It
+    # works but feels fragile.
     Pattern.visit(self) do |node|
       next unless node.type == :open_call
 
