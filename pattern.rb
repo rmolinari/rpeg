@@ -319,6 +319,7 @@ class Pattern
       nonterminal_indices = {}
       nonterminal_by_index = []
       start_line_of_nonterminal = {}
+      pattern_for_nonterminal = {}
 
       full_rule_code = []
 
@@ -330,6 +331,7 @@ class Pattern
         nonterminal_by_index[idx] = nonterminal
         start_line_of_nonterminal[nonterminal] = 2 + full_rule_code.size
         full_rule_code += rule_pattern.program + [[:return]]
+        pattern_for_nonterminal[nonterminal] = rule_pattern
       end
 
       prog << [:call, 2] # call the first nonterminal
@@ -431,6 +433,8 @@ end
 module Analysis
   extend self
 
+  CHECK_PREDICATES = %i[nullable nofail].freeze
+
   # The is lpeg's checkaux from lpcode.c. Comment from that function (reformatted):
   #
   # /*
@@ -450,9 +454,49 @@ module Analysis
   # ** can do whatever they want, so the result is conservative.
   # */
   #
-  # Note that we currently can't check again when the OpenCall elements are resolved, because at that point we have compiled the VM
-  # code. I must look at how LPEG does it.
-  def check_pred(pattern)
+  # TODO:
+  #  - implement for our equivalent of TRep, TRunTime, TCaputre, etc. when we implement them
+  def check_pred(pattern, pred)
+    raise "Bad check predicate #{pred}" unless CHECK_PREDICATES.include?(pred)
+
+    case pattern.type
+    when :char, :charset, :any, :open_call
+      # Not nullable; for open_call this is a blind assumption
+      false
+    when :literal
+      # false is not nullable, true is nofail
+      pattern.data
+    when :not
+      # can match empty, but can fail
+      !(pred == :nofail)
+    when :not
+      # can match empty; can fail exactly when body can
+      if pred == :nullable
+        true
+      else
+        check_pred(pattern.child)
+      end
+    when :concat
+      return false unless check_pred(pattern.left, pred)
+
+      check_pred(pattern.right, pred)
+    when :ordered_choice
+      return true if check_pred(patter.left, pred)
+
+      check_pred(pattern.right, pred)
+    when :call
+      check_pred(pattern.child, pred)
+    else
+      raise "Bad pattern type #{pattern.type}"
+    end
+  end
+
+  def nullable?(pattern)
+    check_pred(pattern, :nullable)
+  end
+
+  def nofail?(pattern)
+    check_pred(pattern, :nofail)
   end
 end
 
