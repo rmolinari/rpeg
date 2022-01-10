@@ -22,7 +22,7 @@ require 'ostruct'
 class Pattern
   NODE_TYPES = %i[charset string any concat ordered_choice repeat not and literal grammar open_call].freeze
 
-  attr_reader :type, :left, :right, :program
+  attr_reader :type, :left, :right
 
   class << self
     # Match any character in string (regarded as a set of characters)
@@ -112,9 +112,9 @@ class Pattern
 
   # Return the index just after the matching prefix of str or null if there is no match
   def match(str)
-    @program ||= Compiler.new(self).compile
+    #@program ||= Compiler.new(self).compile
 
-    machine = ParsingMachine.new(@program, str)
+    machine = ParsingMachine.new(program + [:end], str)
     machine.run
 
     return machine.final_index if machine.success?
@@ -175,9 +175,6 @@ class Pattern
   end
 
   # pat ** n means "n or more occurrences of def"
-  #
-  # TODO:
-  # - negative values: -n means at up to occurrences
   def **(other)
     n = other
 
@@ -189,12 +186,6 @@ class Pattern
         n -= 1
       end
     else
-      # Scratch:
-      #
-      #  E(1) = patt + true # up to 1
-      #  E(2) = patt * (patt + true) + true # up to 2
-      #       = patt * E(1) + true
-      # Up to -n occurrences
       n = -n
       patt = Pattern.P(true)
       while n.positive?
@@ -267,6 +258,113 @@ class Pattern
     self.class.send(:charset_union, cs1, cs2)
   end
 
+  ########################################
+  # Code generation
+
+  def program
+    return @program if @program
+
+    prog = []
+    case type
+    when :charset
+      prog << [:charset, Set.new(data)]
+    when :string
+      data.chars.each do |ch|
+        prog << [:char, ch]
+      end
+    when :any
+      prog << [:any, data]
+    when :concat
+      # Just concatenate the code
+      prog = left.program + right.program
+    when :literal
+      # if data = true then we always succeed, which means we don't have to do anything at all
+      prog << [:fail] unless data
+    when :open_call
+      # This occurs only in a grammar and will be closed in the link phase
+      prog << [:open_call, child]
+    when :ordered_choice
+      p1 = left.program
+      p2 = right.program
+
+      prog << [:choice, 2 + p1.size]
+      prog += p1
+      prog << [:commit, 1 + p2.size]
+      prog += p2
+    when :repeat
+      p = child.program
+
+      if child.type == :charset
+        # Special, quicker handling when the thing we are repeated over is a charset. See Ierusalimschy 4.3
+        prog << [:span, child.data]
+      else
+        prog << [:choice, 2 + p.size]
+        prog += p
+        prog << [:partial_commit, -p.size]
+      end
+    when :not
+      p = child.program
+
+      prog << [:choice, 2 + p.size]
+      prog += p
+      prog << [:fail_twice]
+    when :and
+      p = child.program
+
+      prog << [:choice, 2 + p.size]
+      prog += p
+      prog << [:back_commit, 2]
+      prog << [:fail]
+    when :grammar
+      nonterminal_indices = {}
+      nonterminal_by_index = []
+      start_line_of_nonterminal = {}
+
+      full_rule_code = []
+
+      child.each_with_index do |rule, idx|
+        nonterminal, rule_pattern = rule
+        raise "Nonterminal #{nonterminal} appears twice in grammar" if nonterminal_indices[nonterminal]
+
+        nonterminal_indices[nonterminal] = idx
+        nonterminal_by_index[idx] = nonterminal
+        start_line_of_nonterminal[nonterminal] = 2 + full_rule_code.size
+        full_rule_code += rule_pattern.program + [[:return]]
+      end
+
+      prog << [:call, 2] # call the first nonterminal
+      prog << [:jump, 1 + full_rule_code.size] # we are done: jump to the line after the grammar's program
+      prog += full_rule_code
+
+      # Now close the :open_call statements
+      prog.each_with_index do |instr, idx|
+        op, arg1, = instr
+        next unless op == :open_call
+
+        # arg1 is the nonterminal, or a numeric index giving the rule number
+        if arg1.is_a?(Integer) && arg1 >= 0
+          symbol = nonterminal_by_index[arg1]
+          raise "Grammar does not have entry for index #{arg1}" unless symbol
+
+          arg1 = symbol
+        end
+        start_line = start_line_of_nonterminal[arg1]
+        raise "Nonterminal #{arg1} does not have a rule in grammar"unless start_line
+
+        offset = start_line - idx
+        prog[idx] = [:call, offset]
+      end
+    else
+      raise "Unknown pattern type #{type}"
+    end
+
+    # @program = cleaned_up.call(prog).map(&:freeze).freeze
+    @program = prog.map(&:freeze).freeze
+  end
+
+  ########################################
+  # Misc
+
   def initialize(type, left, right = nil)
     raise "Bad node type #{type}" unless NODE_TYPES.include?(type)
 
@@ -318,22 +416,6 @@ class Pattern
       prepend NonNumericOverloadExtension
     end
   end
-
-  # class ::String
-  #   prepend NonNumericOverloadExtension
-  # end
-
-  # class ::TrueClass
-  #   prepend NonNumericOverloadExtension
-  # end
-
-  # class ::FalseClass
-  #   prepend NonNumericOverloadExtension
-  # end
-
-  # class ::Hash
-  #   prepend NonNumericOverloadExtension
-  # end
 end
 
 module Analysis
@@ -361,316 +443,6 @@ module Analysis
   # Note that we currently can't check again when the OpenCall elements are resolved, because at that point we have compiled the VM
   # code. I must look at how LPEG does it.
   def check_pred(pattern)
-  end
-end
-
-class Compiler
-  class State
-    attr_reader :first_pass_code
-
-    def initialize
-      @next_idx = 0
-      # In the first pass instructions have the form [label, op, arg1, arg2] where label is nil or a symbolic label
-      @first_pass_code = []
-      @next_label = 1
-      @nonterminal_indices = []
-
-      @labels = Set.new
-    end
-
-    # Add an instruction to the (first-pass) program we are building
-    #
-    # It will have the given opcode and arguments.
-    #
-    # If label is given we attach it to the new instruction
-    def add_instruction(op_code, arg1 = nil, arg2 = nil, label: nil)
-      next_instr = ensure_next_instr
-      labels_for_instr = next_instr.first
-
-      if label
-        labels_for_instr << label
-        remember_label(label)
-      end
-
-      next_instr[0...] = [labels_for_instr, op_code, arg1, arg2]
-      @next_idx += 1
-    end
-
-    # Add the given label to the next instruction to be generated.
-    def add_label_to_next(label)
-      next_instr = ensure_next_instr
-      label.must_be
-      next_instr[0] << label
-      remember_label(label)
-    end
-
-    def next_label
-      res = [:label, @next_label]
-      @next_label += 1
-      remember_label(res)
-      res
-    end
-
-    def label?(arg)
-      @labels.include?(arg)
-    end
-
-    def register_nonterminal(nonterminal, index)
-      @nonterminal_indices[index] = nonterminal
-    end
-
-    def index_of_nonterminal(nonterminal)
-      @nonterminal_indices.index(nonterminal)
-    end
-
-    def nonterminal_with_index(index)
-      raise "Cannot look nonterminal with negative index" if index < 0
-
-      @nonterminal_indices[index]
-    end
-
-    private def ensure_next_instr
-      # the first element will contain the set (possibly empty) of labels for this line
-      @first_pass_code[@next_idx] ||= [Set.new]
-    end
-
-    private def remember_label(label)
-      # For technical reasons related to the linker a label can't have a non-negative integer value
-      raise "Illegal label #{label}" if label.is_a?(Integer) && label >= 0
-
-      @labels << label
-    end
-  end
-
-  def initialize(pattern)
-    @top_pattern = pattern.must_be_a Pattern
-
-    @next_label = 0
-    @first_element = true
-
-    @compile_state = State.new
-  end
-
-  # 2-pass: first time through we generate an array of [label, op_code, arg1, arg2] tuples. label may well be nil.
-  # On the second pass we resolve the (symbolic) labels to integers and then convert the references to relative offset
-  def compile
-    gen_first_pass_for(@top_pattern)
-
-    # Attach an :end
-    @compile_state.add_instruction(:end)
-
-    link
-  end
-
-  private def gen_first_pass_for(pattern)
-    # brainless for now
-    case pattern.type
-    when :charset, :string, :any, :concat, :literal, :open_call
-      basic_construction(pattern)
-    when :ordered_choice
-      gen_ordered_choice(pattern)
-    when :repeat
-      # repeat 0 or more times
-      gen_repeat(pattern)
-    when :not
-      # the child pattern doesn't match here; consume no input
-      gen_not(pattern)
-    when :and
-      # the child pattern doesn't match here, but consume no input
-      gen_and(pattern)
-    when :grammar
-      gen_grammar(pattern)
-    else
-      raise "Don't know how to generate code for type #{pattern.type}"
-    end
-  end
-
-  # As described in the Ierusamimschy paper, ordered choice p1+p2 generates this code:
-  #
-  #     Choice L1
-  #     <p1>
-  #     Commit L2
-  # L1: <p2>
-  # L2: ...
-  private def gen_ordered_choice(pattern)
-    p1 = pattern.left.must_be
-    p2 = pattern.right.must_be
-
-    l1 = @compile_state.next_label
-    l2 = @compile_state.next_label
-
-    @compile_state.add_instruction(:choice, l1)
-    gen_first_pass_for(p1)
-    @compile_state.add_instruction(:commit, l2)
-    @compile_state.add_label_to_next(l1)
-    gen_first_pass_for(p2)
-    @compile_state.add_label_to_next(l2)
-  end
-
-  # See Ierusalimschy, section 4.3
-  private def gen_repeat(pattern)
-    l1 = @compile_state.next_label
-    l2 = @compile_state.next_label
-
-    if pattern.child.type == :charset
-      # Special, quicker handling when the thing we are repeated over is a charset. See Ierusalimschy 4.3
-      @compile_state.add_instruction(:span, pattern.child.child)
-    else
-      @compile_state.add_instruction(:choice, l2)
-      @compile_state.add_label_to_next(l1)
-
-      gen_first_pass_for(pattern.child)
-
-      @compile_state.add_instruction(:partial_commit, l1)
-      @compile_state.add_label_to_next(l2)
-    end
-  end
-
-  # See Ierusalimschy section 4.4
-  #
-  #     Choice L1
-  #     <p>
-  #     FailTwice
-  # L1: ...
-  private def gen_not(pattern)
-    l1 = @compile_state.next_label # get a label
-
-    @compile_state.add_instruction(:choice, l1)
-    gen_first_pass_for(pattern.child)
-    @compile_state.add_instruction(:fail_twice)
-    @compile_state.add_label_to_next(l1)
-  end
-
-  # See Ierusalimschy section 4.4
-  #
-  #     Choice L1
-  #     <p>
-  #     BackCommit L2
-  # L1: Fail
-  # L2: ...
-  private def gen_and(pattern)
-    l1 = @compile_state.next_label
-    l2 = @compile_state.next_label
-
-    @compile_state.add_instruction(:choice, l1)
-    gen_first_pass_for(pattern.child)
-    @compile_state.add_instruction(:back_commit, l2)
-    @compile_state.add_instruction(:fail, label: l1)
-    @compile_state.add_label_to_next(l2)
-  end
-
-  # We have hash table, which we interpret as a grammar. Lua has a strong sense of the "first" element of a table (roughly like a
-  # HashTable). It turns out we do, too (see the "Entry Order" documentation for the Hash class)
-  private def gen_grammar(pattern)
-    grammar = pattern.child
-
-    start_symbol, _ = grammar.first
-
-    l2 = @compile_state.next_label
-
-    @compile_state.add_instruction(:call, start_symbol)
-    @compile_state.add_instruction(:jump, l2)
-
-    grammar.each_with_index do |pair, idx|
-      nonterminal, rule_pattern = pair
-      raise "Grammar lists nonterminal #{nonterminal} twice" if @compile_state.index_of_nonterminal(nonterminal)
-
-      @compile_state.register_nonterminal(nonterminal, idx)
-      @compile_state.add_label_to_next(nonterminal)
-
-      gen_first_pass_for(rule_pattern)
-      @compile_state.add_instruction(:return)
-    end
-
-    @compile_state.add_label_to_next(l2)
-  end
-
-  private def basic_construction(pattern)
-    case pattern.type
-    when :charset
-      @compile_state.add_instruction(:charset, Set.new(pattern.child))
-    when :string
-      pattern.child.chars.each do |ch|
-        @compile_state.add_instruction(:char, ch)
-      end
-    when :any
-      @compile_state.add_instruction(:any, pattern.child)
-    when :concat
-      p1 = pattern.left.must_be
-      p2 = pattern.right.must_be
-
-      gen_first_pass_for(p1)
-      gen_first_pass_for(p2)
-    when :literal
-      if pattern.data
-        # we always succeed, so nothing to do
-      else
-        # we always fail
-        @compile_state.add_instruction(:fail)
-      end
-    when :open_call
-      # This will be resolved in the second pass
-      @compile_state.add_instruction(:open_call, pattern.child)
-    else
-      raise "#{pattern.type} is not a simple construction"
-    end
-  end
-
-  private def link
-    # First go through and generate line numbers for each label.
-    label_lines = {}
-
-    phase1 = @compile_state.first_pass_code
-
-    phase1.each_with_index do |command, line|
-      labels, = command
-      next if labels.empty?
-
-      labels.each do |label|
-        raise "Label #{label} has already been used" if label_lines[label]
-
-        label_lines[label] = line
-      end
-    end
-
-    prog = []
-
-    # Now pass through again and work out the offsets
-    phase1.each_with_index do |command, line|
-      _, op, *args = command
-
-      if op == :open_call
-        # Special handling when we compile for a grammar
-        #
-        # The call we need to make might be represented by a non-negative integer n, indicating the n-th rule in the grammar, or
-        # something else, which is the "name" of the nonterminal and which is (or should be) a symbolic label in our program.
-        open_arg = args.first
-        if open_arg.is_a?(Integer)
-          symb_arg = @compile_state.terminal_with_index(open_arg)
-          raise "Nonterminal reference #{open_arg} not found" unless symb_arg
-
-          args[0] = symb_arg
-        end
-
-        # we also need to replace the op code with a regular :call
-        op = :call
-      end
-
-      args = args.map do |arg|
-        if @compile_state.label?(arg)
-          absolute = label_lines[arg]
-          raise "#{arg} does not appear as a label but #{command} uses is" unless absolute
-
-          absolute - line
-        else
-          arg
-        end
-      end
-
-      prog << [op, *args]
-    end
-
-    prog
   end
 end
 
