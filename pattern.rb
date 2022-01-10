@@ -336,7 +336,7 @@ class Pattern
       prog << [:jump, 1 + full_rule_code.size] # we are done: jump to the line after the grammar's program
       prog += full_rule_code
 
-      # Now close the :open_call statements
+      # Now close the :open_call instructions
       prog.each_with_index do |instr, idx|
         op, arg1, = instr
         next unless op == :open_call
@@ -349,10 +349,20 @@ class Pattern
           arg1 = symbol
         end
         start_line = start_line_of_nonterminal[arg1]
-        raise "Nonterminal #{arg1} does not have a rule in grammar"unless start_line
+        raise "Nonterminal #{arg1} does not have a rule in grammar" unless start_line
 
         offset = start_line - idx
-        prog[idx] = [:call, offset]
+
+        # The usual action to replace the open call with a :call. But, if the following instruction is a :return this a tail call
+        # and we can eliminate the stack push by using a :jump instead of the call. This leaves the following :return a dead
+        # statement which we will never reach. We change it to a bogus op code as a sanity check: if the VM ever reaches it we have
+        # made an error somewhere.
+        if prog[idx + 1] && prog[idx + 1].first == :return
+          prog[idx] = [:jump, offset]
+          prog[idx + 1] = [:unreachable]
+        else
+          prog[idx] = [:call, offset]
+        end
       end
     else
       raise "Unknown pattern type #{type}"
