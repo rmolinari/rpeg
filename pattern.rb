@@ -20,7 +20,7 @@ require 'ostruct'
 #     - "n or more occurrences of patt" when n is non-negative
 #     - "fewer than -n occurrences of patt" when n is negative
 class Pattern
-  NODE_TYPES = %i[charset string any concat ordered_choice repeat not and literal grammar open_call].freeze
+  NODE_TYPES = %i[charset string any concat ordered_choice repeat not and literal grammar open_call call].freeze
 
   attr_reader :type, :left, :right
 
@@ -55,7 +55,6 @@ class Pattern
       when FalseClass, TrueClass
         new(:literal, arg)
       when Hash
-        # See the Compiler for how we interpret this, which is a bit different from LPEG
         new(:grammar, arg)
       else
         raise "Pattern.P does not support argument #{arg}"
@@ -281,8 +280,11 @@ class Pattern
       # if data = true then we always succeed, which means we don't have to do anything at all
       prog << [:fail] unless data
     when :open_call
-      # This occurs only in a grammar and will be closed in the link phase
-      prog << [:open_call, child]
+      # we resolved these to :call when the grammar node was created. So if we see one now it is because it was not contained in a
+      # grammar.
+      raise ':open_call node appears outside of a grammar'
+    when :call
+      prog << [:call, data]
     when :ordered_choice
       p1 = left.program
       p2 = right.program
@@ -316,49 +318,34 @@ class Pattern
       prog << [:back_commit, 2]
       prog << [:fail]
     when :grammar
-      nonterminal_indices = {}
-      nonterminal_by_index = []
       start_line_of_nonterminal = {}
-      pattern_for_nonterminal = {}
-
       full_rule_code = []
 
       child.each_with_index do |rule, idx|
         nonterminal, rule_pattern = rule
-        raise "Nonterminal #{nonterminal} appears twice in grammar" if nonterminal_indices[nonterminal]
-
-        nonterminal_indices[nonterminal] = idx
-        nonterminal_by_index[idx] = nonterminal
         start_line_of_nonterminal[nonterminal] = 2 + full_rule_code.size
         full_rule_code += rule_pattern.program + [[:return]]
-        pattern_for_nonterminal[nonterminal] = rule_pattern
       end
 
-      prog << [:call, 2] # call the first nonterminal
+      prog << [:call, @nonterminal_by_index[0]] # call the first nonterminal
       prog << [:jump, 1 + full_rule_code.size] # we are done: jump to the line after the grammar's program
       prog += full_rule_code
 
-      # Now close the :open_call instructions
+      # Now close the :call instructions. THe :open_call nodes were analyzed when the :grammar node was created but we still need to
+      # calculate line offsets
       prog.each_with_index do |instr, idx|
         op, arg1, = instr
-        next unless op == :open_call
+        next unless op == :call
 
-        # arg1 is the nonterminal, or a numeric index giving the rule number
-        if arg1.is_a?(Integer) && arg1 >= 0
-          symbol = nonterminal_by_index[arg1]
-          raise "Grammar does not have entry for index #{arg1}" unless symbol
-
-          arg1 = symbol
-        end
+        # arg1 is the nonterminal
         start_line = start_line_of_nonterminal[arg1]
         raise "Nonterminal #{arg1} does not have a rule in grammar" unless start_line
 
         offset = start_line - idx
 
-        # The usual action to replace the open call with a :call. But, if the following instruction is a :return this a tail call
-        # and we can eliminate the stack push by using a :jump instead of the call. This leaves the following :return a dead
-        # statement which we will never reach. We change it to a bogus op code as a sanity check: if the VM ever reaches it we have
-        # made an error somewhere.
+        # We replaced :open_call with :call. But, if the following instruction is a :return this a tail call and we can eliminate
+        # the stack push by using a :jump instead of the call. This leaves the following :return a dead statement which we will
+        # never reach. We change it to a bogus op code as a sanity check: if the VM ever reaches it we have made an error somewhere.
         if prog[idx + 1] && prog[idx + 1].first == :return
           prog[idx] = [:jump, offset]
           prog[idx + 1] = [:unreachable]
@@ -384,6 +371,12 @@ class Pattern
     @left = left
     @right = right
 
+    sanity_check
+
+    if type == :grammar
+      fix_up_grammar
+    end
+
     @program = nil
   end
 
@@ -402,6 +395,78 @@ class Pattern
     when :open_call
       right.must_be nil
       left.must_not.negative? if left.is_a?(Integer)
+    end
+  end
+
+  # We do several things
+  # - the hash table of rules is replaced with a list of [nonterminal, pattern] pairs
+  # - :opencall(v) patterns are replaced with :call(rule) patterns
+  #
+  # We set up
+  #  @nonterminal_indices: map nonterminal symbols to their index (0, 1, ...)
+  #  @nonterminal_by_index: may indices to the corresopnding nonterminal
+  private def fix_up_grammar
+    raise "Bad type for #fix_up_grammar" unless type == :grammar
+
+    @nonterminal_indices = {}
+    @nonterminal_by_index = []
+
+    child.each_with_index do |rule, idx|
+      nonterminal, _rule_pattern = rule
+      raise "Nonterminal #{nonterminal} appears twice in grammar" if @nonterminal_indices[nonterminal]
+
+      @nonterminal_indices[nonterminal] = idx
+      @nonterminal_by_index[idx] = nonterminal
+    end
+
+    Pattern.visit(self) do |node|
+      next unless node.type == :open_call
+
+      ref = node.data
+      if ref.is_a?(Integer) && ref >= 0
+        symb_ref = @nonterminal_by_index[ref]
+        raise "Grammar has no rule for index #{ref}" unless symb_ref
+
+        ref = symb_ref
+      end
+      raise "Grammar has no rule for symbol #{ref}" unless @nonterminal_indices[ref]
+
+      # This is the only time we have to modify a node in-place, so do it this way
+      node.instance_variable_set(:@type, :call)
+      node.instance_variable_set(:@left, ref)
+    end
+  end
+
+  ########################################
+  # Visiting the nodes in a pattern tree
+
+  # Yield each node in the tree to caller
+  def Pattern.visit(pattern)
+    seen = Set.new
+    to_do = [pattern]
+    until to_do.empty?
+      node = to_do.shift
+      next if seen.include? node
+
+      seen << node
+
+      yield node
+
+      case node.type
+      when :charset, :string, :any, :literal, :call, :open_call
+      # nothing more to do
+      when :repeat, :not, :and
+        to_do << node.child
+      when :ordered_choice, :concat
+        to_do << node.left
+        to_do << node.right
+      when :grammar
+        node.data.each do |_, rule_pattern|
+          to_do << rule_pattern
+        end
+      else
+        raise "Unhandled pattern type #{node.type}"
+      end
     end
   end
 
@@ -501,7 +566,7 @@ module Analysis
 end
 
 class ParsingMachine
-  OP_CODES = %i[char charset any jump choice call return commit back_commit partial_commit span end fail fail_twice].freeze
+  OP_CODES = %i[char charset any jump choice call return commit back_commit partial_commit span end fail fail_twice unreachable].freeze
   # subject is the string to match against
 
   attr_reader :final_index
@@ -613,6 +678,8 @@ class ParsingMachine
         @success = true
         @final_index = @current_subject_position
         done!
+      when :unreachable
+        raise "VM reached :unreachable instruction at line #{@current_instruction}"
       else
         raise "Unsupported op code #{op_code}"
       end
