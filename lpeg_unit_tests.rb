@@ -110,7 +110,35 @@ class TestsFromLpegCode < Test::Unit::TestCase
     assert_equal 0, m.match(m.P("")**-3, "a")
   end
 
-  ## ^^
+  # test.lua ll.918-943
+  def test_bad_grammar
+    bad_grammar = lambda do |grammar, expected_pattern|
+      expected_pattern = /#{expected_pattern}/ if expected_pattern.is_a?(String)
+      assert_raise_message(expected_pattern) { m.P(grammar) }
+    end
+
+    bad_grammar.call({ S: m.V(0) }, "rule 'S'")
+    bad_grammar.call({ S: m.V(1) }, "rule '1'")   # invalid non-terminal
+    bad_grammar.call({ S: m.V("x") }, "rule 'x'")   # invalid non-terminal
+    bad_grammar.call({ S: m.V({}) }, "rule '{}'")   # invalid non-terminal
+    bad_grammar.call({ S: +m.P("a") * m.V(0) }, "rule 'S'")  # left-recursive
+    bad_grammar.call({ S: -m.P("a") * m.V(0) }, "rule 'S'")  # left-recursive
+    bad_grammar.call({ S: -1 * m.V(0) }, "rule 'S'")  # left-recursive
+    bad_grammar.call({ S: -1 + m.V(0) }, "rule 'S'")  # left-recursive
+    bad_grammar.call({ S: 1 * m.V(1), T: m.V(1) }, "rule 'T'") # left-recursive
+    bad_grammar.call({ S: 1 * m.V(1)**0, T: m.P(0) }, "rule 'S'") # inf. loop
+    bad_grammar.call({ S: m.V(1), T: m.V(2)**0, U: m.P("") }, "rule 'T'") # inf. loop
+    bad_grammar.call({ S: m.V(1) * m.V(2)**0, T: m.V(2)**0, U: m.P("") }, "rule 'S'") # inf. loop
+    bad_grammar.call({ S: +(m.V(0) * 'a') }, "rule 'S'") # inf. loop
+    bad_grammar.call({ S: -(m.V(0) * 'a') }, "rule 'S'") # inf. loop
+    bad_grammar.call({ x: m.P('a')**-1 * m.V("x") }, "rule 'x'") # left recursive
+    bad_grammar.call({ x: m.P('a') * m.V("y")**1, y: +m.P(1) }, "rule 'x'")
+
+    assert_equal 1, m.match({ x: 'a' * -m.V(0) }, "aaa")
+    assert_nil m.match({ x: 'a' * -m.V(0) }, "aaaa")
+  end
+
+  ## %%%
   ## - up to l.151 in test.lua
 
   # Helpers to make it easier to use the tests copied from the Lua code

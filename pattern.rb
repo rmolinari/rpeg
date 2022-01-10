@@ -22,7 +22,7 @@ require 'ostruct'
 class Pattern
   NODE_TYPES = %i[charset string any seq ordered_choice repeat not and literal grammar open_call rule call].freeze
 
-  attr_reader :type, :left, :right
+  attr_reader :type, :left, :right, :extra
 
   class << self
     # Match any character in string (regarded as a set of characters)
@@ -90,7 +90,9 @@ class Pattern
     # ref should be either
     #  - a non-negative integer n, referring to the n-th rule in grammar (0-based) or
     #  - a value that will be the key in the final grammar - a Hash - of the rule being referenced
+    #    - strings are turned into symbox
     def V(ref)
+      ref = ref.to_sym if ref.is_a?(String)
       Pattern.new(:open_call, ref)
     end
 
@@ -117,8 +119,6 @@ class Pattern
 
   # Return the index just after the matching prefix of str or null if there is no match
   def match(str)
-    #@program ||= Compiler.new(self).compile
-
     machine = ParsingMachine.new(program + [Instruction.new(:end)], str)
     machine.run
 
@@ -242,6 +242,7 @@ class Pattern
   # Each is either a Set or a Range
   private def charset_difference(cs1, cs2)
     if cs1.is_a?(Set)
+
       cs1.subtract(cs2)
     elsif cs2.is_a?(Range)
       # They are both ranges. We can keep it that way so long as cs2 isn't in the middle of cs1.
@@ -283,8 +284,12 @@ class Pattern
       result << "#{type_s}: #{data.join}"
     when :string, :any
       result << "String: #{data}"
-    when :literal, :call, :open_call
+    when :literal
       result << "Literal: #{data.inspect}"
+    when :open_call
+      result << "OpenCall: #{data}"
+    when :call
+      result << "Call: #{extra}"
     when :seq, :ordered_choice
       result << (type == :seq ? "Seq:" : "Ordered Choice:")
       do_sub_pattern.call(left)
@@ -325,6 +330,19 @@ class Pattern
     @nofail = Analysis.nofail?(self)
   end
 
+  def num_children
+    case type
+    when :charset, :string, :any, :literal, :open_call
+      0
+    when :repeat, :and, :not, :call, :rule
+      1
+    when :seq, :ordered_choice
+      2
+    when :grammar
+      raise "#num_children isn't meaningful for :grammar nodes"
+    end
+  end
+
   ########################################
   # Code generation
 
@@ -353,7 +371,7 @@ class Pattern
       # grammar.
       raise ':open_call node appears outside of a grammar'
     when :call
-      prog << Instruction.new(:call, left)
+      prog << Instruction.new(:call, extra)
     when :ordered_choice
       p1 = left.program
       p2 = right.program
@@ -391,8 +409,8 @@ class Pattern
       full_rule_code = []
 
       data.each_with_index do |rule, idx|
-        nonterminal = rule.left
-        rule_pattern = rule.right
+        nonterminal = rule.extra
+        rule_pattern = rule.left
         start_line_of_nonterminal[nonterminal] = 2 + full_rule_code.size
         full_rule_code += rule_pattern.program + [Instruction.new(:return)]
       end
@@ -434,20 +452,41 @@ class Pattern
   ########################################
   # Misc
 
-  def initialize(type, left, right = nil)
+  def initialize(type, left, right = nil, extra: nil)
     raise "Bad node type #{type}" unless NODE_TYPES.include?(type)
 
     @type = type
     @left = left
     @right = right
 
+    # :call uses this for the nonterminal
+    @extra = extra
+
     sanity_check
 
     if type == :grammar
       fix_up_grammar
+
+      Analysis.verify_grammar(self)
     end
 
     @program = nil
+  end
+
+  # Special operation when closing open calls
+  def convert_open_call_to_call!(rule, ref)
+    raise "Cannot convert pattern to :call" unless type == :open_call
+    raise "Must give rule and nonterminal symbol to :call pattern" unless rule && ref
+    raise "Rule for :call pattern must be a rule, got #{rule.type}" unless rule.type == :rule
+
+    @type = :call
+    @left = rule
+    @extra = ref
+
+    # We must check these again when needed rather than use the memoized values
+    [:@nullable, :@nofail].each do |ivar|
+      remove_instance_variable(ivar) if instance_variable_defined?(ivar)
+    end
   end
 
   private def sanity_check
@@ -465,9 +504,14 @@ class Pattern
     when :open_call
       right.must_be nil
       left.must_not.negative? if left.is_a?(Integer)
+    when :call
+      left_must_be
+      right.must_be nil
+      extra.must_be
     when :rule
-      left.must_be
-      right.must_be_a Pattern
+      left.must_be_a Pattern
+      right.must_be nil
+      extra.must_be
     end
   end
 
@@ -487,14 +531,20 @@ class Pattern
     @nonterminal_indices = {}
     @nonterminal_by_index = []
 
-    rule_hash = child.transform_values!{ Pattern.P(_1) }
+    grammar_hash = child.transform_values!{ Pattern.P(_1) }
+    grammar_hash.transform_keys! { |key| key.is_a?(String) ? key.to_sym : key }
+
+    rule_hash = {}
     rule_list = []
 
-    rule_hash.each_with_index do |rule, idx|
+    grammar_hash.each_with_index do |rule, idx|
       nonterminal, rule_pattern = rule
       raise "Nonterminal #{nonterminal} appears twice in grammar" if @nonterminal_indices[nonterminal]
 
-      rule_list << Pattern.new(:rule, nonterminal, rule_pattern)
+      rule = Pattern.new(:rule, rule_pattern, extra: nonterminal)
+      #grammar_hash[nonterminal] = rule
+      rule_list << rule
+      rule_hash[nonterminal] = rule
 
       @nonterminal_indices[nonterminal] = idx
       @nonterminal_by_index[idx] = nonterminal
@@ -508,19 +558,14 @@ class Pattern
       ref = node.data
       if ref.is_a?(Integer) && ref >= 0
         symb_ref = @nonterminal_by_index[ref]
-        raise "Grammar has no rule for index #{ref}" unless symb_ref
+        raise "bad grammar index for rule '#{ref}'" unless symb_ref
 
         ref = symb_ref
       end
-      raise "Grammar has no rule for symbol #{ref}" unless @nonterminal_indices[ref]
+      raise "bad grammar reference for rule '#{ref}'" unless @nonterminal_indices[ref]
 
-      # This is the only time we have to modify a node in-place, so do it this way
-      node.instance_variable_set(:@type, :call)
-
-      # Put the nonterminal in the left slot and the rule pattern itself in the right slot. This helps with certain downstream
-      # operations.
-      node.instance_variable_set(:@left, ref)
-      node.instance_variable_set(:@right, rule_hash[ref].must_be)
+      rule = rule_hash[ref].must_be
+      node.convert_open_call_to_call!(rule, ref)
     end
   end
 
@@ -542,7 +587,7 @@ class Pattern
       case node.type
       when :charset, :string, :any, :literal, :call, :open_call
       # nothing more to do
-      when :repeat, :not, :and
+      when :repeat, :not, :and, :rule
         to_do << node.child
       when :ordered_choice, :seq
         to_do << node.left
@@ -550,7 +595,7 @@ class Pattern
       when :grammar
         node.data.each do |rule|
           rule.type.must_be :rule
-          to_do << rule.right
+          to_do << rule.child
         end
       else
         raise "Unhandled pattern type #{node.type}"
@@ -587,6 +632,15 @@ module Analysis
   extend self
 
   CHECK_PREDICATES = %i[nullable nofail].freeze
+
+  # These two are cached in pattern.nullable? and pattern.nofail?
+  def nullable?(pattern)
+    check_pred(Pattern.P(pattern), :nullable)
+  end
+
+  def nofail?(pattern)
+    check_pred(Pattern.P(pattern), :nofail)
+  end
 
   # The is lpeg's checkaux from lpcode.c. Comment from that function (reformatted):
   #
@@ -631,39 +685,47 @@ module Analysis
         # can match empty; can fail exactly when body can
         return true if pred == :nullable
 
-        pattern = pattern.child
+        pattern = pattern.child.must_be
       when :seq
         return false unless check_pred(pattern.left, pred)
 
-        pattern = pattern.right
+        pattern = pattern.right.must_be
       when :ordered_choice
         return true if check_pred(pattern.left, pred)
 
-        pattern = pattern.right
+        pattern = pattern.right.must_be
       when :grammar
         # Strings are matched by the initial nonterminal
         first_rule = pattern.child.first
         first_rule.type.must_be :rule
-        pattern = first_rule.right
+        pattern = first_rule.child.must_be
       when :call
-        # The call's pattern is in the right slot (the left slot contains the nonterminal symbol)
-        pattern = pattern.right
+        # The call's rule is in child
+        pattern = pattern.child.must_be
+      when :rule
+        # Rule's pattern is in child
+        pattern = pattern.child.must_be
       else
         raise "Bad pattern type #{pattern.type}"
       end
     end
   end
 
-  # These two are cached in pattern.nullable? and pattern.nofail?
-  def nullable?(pattern)
-    check_pred(Pattern.P(pattern), :nullable)
+  def verify_grammar(grammar)
+    raise "Not a grammar!" unless grammar.type == :grammar
+
+    # /* check infinite loops inside rules */
+    grammar.data.each do |rule|
+      verify_rule(rule)
+      raise "Grammar has potential infinite loop in rule '#{rule.extra}'" if loops?(rule)
+    end
   end
 
-  def nofail?(pattern)
-    check_pred(Pattern.P(pattern), :nofail)
-  end
-
-  # Sanity checks from the LPEG sources
+  # Sanity checks from the LPEG sources. We check if a rule can be left-recursive, i.e., whether we can return to the rule without
+  # consuming any input. The plan is to walk the tree into subtrees, possibily repetitively, whenever we see we can do so without
+  # consuming any input.
+  #
+  # LPEG comment follows. Note that we check for nullability directly for sanity's sake.
   #
   # /*
   # ** Check whether a rule can be left recursive; raise an error in that
@@ -676,49 +738,69 @@ module Analysis
   # ** counts the elements in 'passed'.
   # ** Assume ktable at the top of the stack.
   # */
-  def verifyrule(rule_pattern, grammar)
-    # seen = []
+  def verify_rule(rule)
+    rules_seen = []
 
-    # # Not sure how nb fits in exactly. I'm not bothering with TCO.
-    # local_rec = lambda do |pattern, nb|
-    #   case pattern.type
-    #   when :char, :charset, :any
-    #     return nb
-    #   when :literal
-    #     return pattern.data ? true : nb
-    # case TNot: case TAnd: case TRep:
-    #   /* return verifyrule(L, sib1(tree), passed, npassed, 1); */
-    #   tree = sib1(tree); nb = 1; goto tailcall;
-    # case TCapture: case TRunTime:
-    #   /* return verifyrule(L, sib1(tree), passed, npassed, nb); */
-    #   tree = sib1(tree); goto tailcall;
-    # case TCall:
-    #   /* return verifyrule(L, sib2(tree), passed, npassed, nb); */
-    #   tree = sib2(tree); goto tailcall;
-    # case TSeq:  /* only check 2nd child if first is nb */
-    #   if (!verifyrule(L, sib1(tree), passed, npassed, 0))
-    #     return nb;
-    #   /* else return verifyrule(L, sib2(tree), passed, npassed, nb); */
-    #   tree = sib2(tree); goto tailcall;
-    # case TChoice:  /* must check both children */
-    #   nb = verifyrule(L, sib1(tree), passed, npassed, nb);
-    #   /* return verifyrule(L, sib2(tree), passed, npassed, nb); */
-    #   tree = sib2(tree); goto tailcall;
-    # case TRule:
-    #   if (npassed >= MAXRULES)
-    #     return verifyerror(L, passed, npassed);
-    #   else {
-    #     passed[npassed++] = tree->key;
-    #     /* return verifyrule(L, sib1(tree), passed, npassed); */
-    #     tree = sib1(tree); goto tailcall;
-    #   }
-    # case TGrammar:
-    #   return nullable(tree);  /* sub-grammar cannot be left recursive */
+    local_rec = lambda do |pattern, num_rules_seen|
+      case pattern.type
+      when :string, :charset, :any, :literal
+        # no op
+      when :not, :and, :repeat
+        # nullable, so keep going
+        local_rec.call(pattern.child, num_rules_seen)
+      when :call
+        local_rec.call(pattern.child, num_rules_seen)
+      when :seq
+        local_rec.call(pattern.left, num_rules_seen)
+        # only check 2nd child if first is nullable
+        local_rec.call(pattern.right, num_rules_seen) if pattern.left.nullable?
+      when :ordered_choice
+        # must check both children
+        local_rec.call(pattern.left, num_rules_seen)
+        local_rec.call(pattern.right, num_rules_seen)
+      when :rule
+        raise "rule '#{pattern.extra}' may be left-recursive" if rules_seen[0...num_rules_seen].include?(pattern)
 
-    # end
+        num_rules_seen += 1
+        rules_seen[num_rules_seen] = pattern
+        local_rec.call(pattern.child, num_rules_seen)
+      when :grammar
+        # LPEG says: /* sub-grammar cannot be left recursive */
+        # But why?
+      else
+        raise "Unhandled case #{pattern.type} in verify_rule"
+      end
+    end
 
+    local_rec.call(rule, 0)
   end
 
+  # From lptree.c
+  #
+  # /*
+  # ** Check whether a tree has potential infinite loops
+  # */
+  def loops?(pattern)
+    return true if pattern.type == :repeat && pattern.child.nullable?
+
+    # /* sub-grammars already checked */
+    #
+    # The comment refers to verify_grammar
+    return false if pattern.type == :grammar
+
+    # left-recursive grammar loops are handled in verifygrammar
+    return false if pattern.type == :call
+
+    case pattern.num_children
+    when 1
+      loops?(pattern.child)
+    when 2
+      fst = loops?(pattern.left)
+      return true if fst
+
+      loops?(pattern.right)
+    end
+  end
 end
 
 # Instances are generated during program generation in Pattern and consumed in the ParsingMachine
