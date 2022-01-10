@@ -89,12 +89,37 @@ class TestsFromLpegCode < Test::Unit::TestCase
     assert_nil m.match(letter**1 - ("for" * eos), "for")
   end
 
+  # test.lua ll.894-911
+  def test_isnullable
+    isnullable(m.P("x")**-4)
+    assert_equal 2, m.match(((m.P(0) + 1) * m.S("al"))**0, "alo")
+    assert_equal 2, m.match((("x" + +m.P(1))**-4 * m.S("al"))**0, "alo")
+    isnullable("")
+    isnullable(m.P("x")**0)
+    isnullable(m.P("x")**-1)
+    isnullable(m.P("x") + 1 + 2 + m.P("a")**-1)
+    isnullable(-m.P("ab"))
+    isnullable(- -m.P("ab"))
+    isnullable(+ +(m.P("ab") + "xy"))
+    isnullable(- +m.P("ab")**0)
+    isnullable(+ -m.P("ab")**1)
+    isnullable(+m.V(3))
+    isnullable(m.V(3) + m.V(1) + m.P('a')**-1)
+    isnullable({ S: m.V(1) * m.V(2), T: m.V(2), U: m.P(0) })
+    assert_equal 2, m.match(m.P({ S: m.V(1) * m.V(2), T: m.V(2), U: m.P(1) })**0, "abc")
+    assert_equal 0, m.match(m.P("")**-3, "a")
+  end
+
   ## ^^
   ## - up to l.151 in test.lua
 
   # Helpers to make it easier to use the tests copied from the Lua code
   def m
     Pattern
+  end
+
+  def isnullable(patt)
+    assert Analysis.nullable?(patt)
   end
 
   def digit; m.S("0123456789"); end

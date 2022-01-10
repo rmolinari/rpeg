@@ -20,7 +20,7 @@ require 'ostruct'
 #     - "n or more occurrences of patt" when n is non-negative
 #     - "fewer than -n occurrences of patt" when n is negative
 class Pattern
-  NODE_TYPES = %i[charset string any concat ordered_choice repeat not and literal grammar open_call call].freeze
+  NODE_TYPES = %i[charset string any seq ordered_choice repeat not and literal grammar open_call call].freeze
 
   attr_reader :type, :left, :right
 
@@ -41,12 +41,18 @@ class Pattern
       when Pattern
         arg
       when String
-        # match that string exactly
-        new(:string, arg)
+        # match that string exactly. We always match the empty strin
+        if arg.empty?
+          P(true)
+        else
+          new(:string, arg)
+        end
       when Integer
         # When n >= 0, match at least n chars.
         # When n < 0, there must not be n or more characters left
-        if arg >= 0
+        if arg.zero?
+          P(true)
+        elsif arg.positive?
           new(:any, arg)
         else
           # "Does not match n characters"
@@ -152,7 +158,7 @@ class Pattern
       return other
     end
 
-    Pattern.new(:concat, self, other)
+    Pattern.new(:seq, self, other)
   end
 
   # p1 + p2 is ordered choice: if p1 matches we match, otherwise try matching on p2
@@ -257,6 +263,51 @@ class Pattern
     self.class.send(:charset_union, cs1, cs2)
   end
 
+  def to_s
+    return @to_s if @to_s
+
+    result = []
+    do_sub_pattern = lambda do |sub_patt|
+      sub_patt.to_s.split("\n").each do |line|
+        result << "  #{line}"
+      end
+    end
+
+    type_s = type.to_s.capitalize
+
+    # We don't use Pattern.visit because the order is wrong
+    case type
+    when :charset
+      result << "#{type_s}: #{data.join}"
+    when :string, :any
+      result << "String: #{data}"
+    when :literal, :call, :open_call
+      result << "Literal: #{data.inspect}"
+    when :seq, :ordered_choice
+      result << (type == :seq ? "Seq:" : "Ordered Choice:")
+      do_sub_pattern.call(left)
+      do_sub_pattern.call(right)
+    when :repeat, :not, :and
+      result << type_s
+      do_sub_pattern.call(child)
+    when :grammar
+      result << "Grammar:"
+      first = true
+      data.each do |nonterminal, rule_pattern|
+        prefix = "  #{nonterminal}: "
+        first = true
+        rule_pattern.to_s.split("\n").each do |line|
+          line_prefix = first ? prefix : (" " * prefix.len)
+          result << "#{line_prefix}#{line}"
+        end
+      end
+    else
+      raise "Unhandled type for to_s: #{type}"
+    end
+
+    @to_s = result.join("\n")
+  end
+
   ########################################
   # Code generation
 
@@ -273,7 +324,8 @@ class Pattern
       end
     when :any
       prog << [:any, data]
-    when :concat
+    when :seq
+
       # Just concatenate the code
       prog = left.program + right.program
     when :literal
@@ -284,7 +336,7 @@ class Pattern
       # grammar.
       raise ':open_call node appears outside of a grammar'
     when :call
-      prog << [:call, data]
+      prog << [:call, left]
     when :ordered_choice
       p1 = left.program
       p2 = right.program
@@ -399,6 +451,8 @@ class Pattern
   end
 
   # We do several things
+  # - make sure each rule pattern is actually a pattern.
+  #   - since we can specify rules as strings, say, or subgrammars (as hash) we need to step in here
   # - the hash table of rules is replaced with a list of [nonterminal, pattern] pairs
   # - :opencall(v) patterns are replaced with :call(rule) patterns
   #
@@ -411,7 +465,9 @@ class Pattern
     @nonterminal_indices = {}
     @nonterminal_by_index = []
 
-    child.each_with_index do |rule, idx|
+    rule_hash = child.transform_values!{ Pattern.P(_1) }
+
+    rule_hash.each_with_index do |rule, idx|
       nonterminal, _rule_pattern = rule
       raise "Nonterminal #{nonterminal} appears twice in grammar" if @nonterminal_indices[nonterminal]
 
@@ -433,14 +489,17 @@ class Pattern
 
       # This is the only time we have to modify a node in-place, so do it this way
       node.instance_variable_set(:@type, :call)
+
+      # Put the nonterminal in the left slot and the rule pattern itself in the right slot
       node.instance_variable_set(:@left, ref)
+      node.instance_variable_set(:@right, rule_hash[ref].must_be)
     end
   end
 
   ########################################
   # Visiting the nodes in a pattern tree
 
-  # Yield each node in the tree to caller
+  # Yield each node in the tree to caller. We visit breadth-first
   def Pattern.visit(pattern)
     seen = Set.new
     to_do = [pattern]
@@ -457,7 +516,7 @@ class Pattern
       # nothing more to do
       when :repeat, :not, :and
         to_do << node.child
-      when :ordered_choice, :concat
+      when :ordered_choice, :seq
         to_do << node.left
         to_do << node.right
       when :grammar
@@ -524,17 +583,18 @@ module Analysis
   def check_pred(pattern, pred)
     raise "Bad check predicate #{pred}" unless CHECK_PREDICATES.include?(pred)
 
-    the_pattern = pattern
     # loop to eliminate some tail calls, as in the LPEG code. I don't think it's really necessary - as my implementation is not
     # going to be fast overall - but let's try a new technique.
     loop do
       case pattern.type
-      when :char, :charset, :any, :open_call
+      when :string, :charset, :any, :open_call
         # Not nullable; for open_call this is a blind assumption
         return false
       when :literal
         # false is not nullable, true is nofail
         return pattern.data
+      when :repeat
+        return true # we never fail, as we can match zero occurrences
       when :not
         # can match empty, but can fail
         return (pred != :nofail)
@@ -542,17 +602,22 @@ module Analysis
         # can match empty; can fail exactly when body can
         return true if pred == :nullable
 
-        the_pattern = pattern.child
-      when :concat
+        pattern = pattern.child
+      when :seq
         return false unless check_pred(pattern.left, pred)
 
-        the_pattern = pattern.right
+        pattern = pattern.right
       when :ordered_choice
         return true if check_pred(pattern.left, pred)
 
-        the_pattern = pattern.right
-n      when :call
-        the_pattern = pattern.child
+        pattern = pattern.right
+      when :grammar
+        # Strings are matched by the initial nonterminal
+        _, first_rule = pattern.child.first
+        pattern = first_rule
+      when :call
+        # The call's pattern is in the right slot (the left slot contains the nonterminal symbol)
+        pattern = pattern.right
       else
         raise "Bad pattern type #{pattern.type}"
       end
@@ -560,11 +625,11 @@ n      when :call
   end
 
   def nullable?(pattern)
-    check_pred(pattern, :nullable)
+    check_pred(Pattern.P(pattern), :nullable)
   end
 
   def nofail?(pattern)
-    check_pred(pattern, :nofail)
+    check_pred(Pattern.P(pattern), :nofail)
   end
 end
 
