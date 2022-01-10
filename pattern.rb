@@ -20,7 +20,7 @@ require 'ostruct'
 #     - "n or more occurrences of patt" when n is non-negative
 #     - "fewer than -n occurrences of patt" when n is negative
 class Pattern
-  NODE_TYPES = %i[charset string any seq ordered_choice repeat not and literal grammar open_call call].freeze
+  NODE_TYPES = %i[charset string any seq ordered_choice repeat not and literal grammar open_call rule call].freeze
 
   attr_reader :type, :left, :right
 
@@ -185,6 +185,8 @@ class Pattern
 
     if n >= 0
       # So, we represent this by a sequence of num occurrences, followed by a zero-or-more
+      raise "Pattern may match 0-length string so repetition may lead to an infinite loop" if nullable?
+
       patt = Pattern.new(:repeat, self) # this repeats 0 or more times
       while n.positive?
         patt = self * patt
@@ -309,6 +311,21 @@ class Pattern
   end
 
   ########################################
+  # Pattern properties
+
+  def nullable?
+    return @nullable if defined? @nullable
+
+    @nullable = Analysis.nullable?(self)
+  end
+
+  def nofail?
+    return @nofail if defined? @nofail
+
+    @nofail = Analysis.nofail?(self)
+  end
+
+  ########################################
   # Code generation
 
   def program
@@ -373,8 +390,9 @@ class Pattern
       start_line_of_nonterminal = {}
       full_rule_code = []
 
-      child.each_with_index do |rule, idx|
-        nonterminal, rule_pattern = rule
+      data.each_with_index do |rule, idx|
+        nonterminal = rule.left
+        rule_pattern = rule.right
         start_line_of_nonterminal[nonterminal] = 2 + full_rule_code.size
         full_rule_code += rule_pattern.program + [Instruction.new(:return)]
       end
@@ -447,6 +465,9 @@ class Pattern
     when :open_call
       right.must_be nil
       left.must_not.negative? if left.is_a?(Integer)
+    when :rule
+      left.must_be
+      right.must_be_a Pattern
     end
   end
 
@@ -455,6 +476,7 @@ class Pattern
   #   - since we can specify rules as strings, say, or subgrammars (as hash) we need to step in here
   # - the hash table of rules is replaced with a list of [nonterminal, pattern] pairs
   # - :opencall(v) patterns are replaced with :call(rule) patterns
+  # - convert the hashtable of rules to a same-order list of :rule nodes.
   #
   # We set up
   #  @nonterminal_indices: map nonterminal symbols to their index (0, 1, ...)
@@ -466,14 +488,19 @@ class Pattern
     @nonterminal_by_index = []
 
     rule_hash = child.transform_values!{ Pattern.P(_1) }
+    rule_list = []
 
     rule_hash.each_with_index do |rule, idx|
-      nonterminal, _rule_pattern = rule
+      nonterminal, rule_pattern = rule
       raise "Nonterminal #{nonterminal} appears twice in grammar" if @nonterminal_indices[nonterminal]
+
+      rule_list << Pattern.new(:rule, nonterminal, rule_pattern)
 
       @nonterminal_indices[nonterminal] = idx
       @nonterminal_by_index[idx] = nonterminal
     end
+
+    @left = rule_list
 
     Pattern.visit(self) do |node|
       next unless node.type == :open_call
@@ -490,7 +517,8 @@ class Pattern
       # This is the only time we have to modify a node in-place, so do it this way
       node.instance_variable_set(:@type, :call)
 
-      # Put the nonterminal in the left slot and the rule pattern itself in the right slot
+      # Put the nonterminal in the left slot and the rule pattern itself in the right slot. This helps with certain downstream
+      # operations.
       node.instance_variable_set(:@left, ref)
       node.instance_variable_set(:@right, rule_hash[ref].must_be)
     end
@@ -520,8 +548,9 @@ class Pattern
         to_do << node.left
         to_do << node.right
       when :grammar
-        node.data.each do |_, rule_pattern|
-          to_do << rule_pattern
+        node.data.each do |rule|
+          rule.type.must_be :rule
+          to_do << rule.right
         end
       else
         raise "Unhandled pattern type #{node.type}"
@@ -613,8 +642,9 @@ module Analysis
         pattern = pattern.right
       when :grammar
         # Strings are matched by the initial nonterminal
-        _, first_rule = pattern.child.first
-        pattern = first_rule
+        first_rule = pattern.child.first
+        first_rule.type.must_be :rule
+        pattern = first_rule.right
       when :call
         # The call's pattern is in the right slot (the left slot contains the nonterminal symbol)
         pattern = pattern.right
@@ -624,6 +654,7 @@ module Analysis
     end
   end
 
+  # These two are cached in pattern.nullable? and pattern.nofail?
   def nullable?(pattern)
     check_pred(Pattern.P(pattern), :nullable)
   end
@@ -631,6 +662,63 @@ module Analysis
   def nofail?(pattern)
     check_pred(Pattern.P(pattern), :nofail)
   end
+
+  # Sanity checks from the LPEG sources
+  #
+  # /*
+  # ** Check whether a rule can be left recursive; raise an error in that
+  # ** case; otherwise return 1 iff pattern is nullable.
+  # ** The return value is used to check sequences, where the second pattern
+  # ** is only relevant if the first is nullable.
+  # ** Parameter 'nb' works as an accumulator, to allow tail calls in
+  # ** choices. ('nb' true makes function returns true.)
+  # ** Parameter 'passed' is a list of already visited rules, 'npassed'
+  # ** counts the elements in 'passed'.
+  # ** Assume ktable at the top of the stack.
+  # */
+  def verifyrule(rule_pattern, grammar)
+    # seen = []
+
+    # # Not sure how nb fits in exactly. I'm not bothering with TCO.
+    # local_rec = lambda do |pattern, nb|
+    #   case pattern.type
+    #   when :char, :charset, :any
+    #     return nb
+    #   when :literal
+    #     return pattern.data ? true : nb
+    # case TNot: case TAnd: case TRep:
+    #   /* return verifyrule(L, sib1(tree), passed, npassed, 1); */
+    #   tree = sib1(tree); nb = 1; goto tailcall;
+    # case TCapture: case TRunTime:
+    #   /* return verifyrule(L, sib1(tree), passed, npassed, nb); */
+    #   tree = sib1(tree); goto tailcall;
+    # case TCall:
+    #   /* return verifyrule(L, sib2(tree), passed, npassed, nb); */
+    #   tree = sib2(tree); goto tailcall;
+    # case TSeq:  /* only check 2nd child if first is nb */
+    #   if (!verifyrule(L, sib1(tree), passed, npassed, 0))
+    #     return nb;
+    #   /* else return verifyrule(L, sib2(tree), passed, npassed, nb); */
+    #   tree = sib2(tree); goto tailcall;
+    # case TChoice:  /* must check both children */
+    #   nb = verifyrule(L, sib1(tree), passed, npassed, nb);
+    #   /* return verifyrule(L, sib2(tree), passed, npassed, nb); */
+    #   tree = sib2(tree); goto tailcall;
+    # case TRule:
+    #   if (npassed >= MAXRULES)
+    #     return verifyerror(L, passed, npassed);
+    #   else {
+    #     passed[npassed++] = tree->key;
+    #     /* return verifyrule(L, sib1(tree), passed, npassed); */
+    #     tree = sib1(tree); goto tailcall;
+    #   }
+    # case TGrammar:
+    #   return nullable(tree);  /* sub-grammar cannot be left recursive */
+
+    # end
+
+  end
+
 end
 
 # Instances are generated during program generation in Pattern and consumed in the ParsingMachine

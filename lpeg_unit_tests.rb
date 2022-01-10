@@ -101,7 +101,7 @@ class TestsFromLpegCode < Test::Unit::TestCase
     isnullable(-m.P("ab"))
     isnullable(- -m.P("ab"))
     isnullable(+ +(m.P("ab") + "xy"))
-    isnullable(- +m.P("ab")**0)
+    isnullable(- +(m.P("ab")**0))
     isnullable(+ -m.P("ab")**1)
     isnullable(+m.V(3))
     isnullable(m.V(3) + m.V(1) + m.P('a')**-1)
@@ -119,7 +119,7 @@ class TestsFromLpegCode < Test::Unit::TestCase
   end
 
   def isnullable(patt)
-    assert Analysis.nullable?(patt)
+    m.P(patt).nullable?
   end
 
   def digit; m.S("0123456789"); end
