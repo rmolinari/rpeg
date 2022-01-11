@@ -24,14 +24,19 @@ class Pattern
     const_set op.upcase, op
   end
 
-  attr_reader :type, :left, :right, :extra
+  attr_reader :type, :left, :right, :data
 
   class << self
-    # Match any character in string (regarded as a set of characters)
-    def S(string)
-      return P(false) if string.empty?
-
-      new(CHARSET, Set.new(string.chars))
+    # Match any character in string (regarded as a set of characters), range, or Set
+    def S(charset)
+      case charset
+      when Range, Set
+        Pattern.new(CHARSET, data: charset)
+      when String
+        Pattern.new(CHARSET, data: Set.new(charset.chars))
+      else
+        raise "Cannot create a character set pattern from #{chars}"
+      end
     end
 
     # Take argument and turn it into a pattern
@@ -47,7 +52,7 @@ class Pattern
         if arg.empty?
           P(true)
         else
-          new(STRING, arg)
+          new(STRING, data: arg)
         end
       when Integer
         # When n >= 0, match at least n chars.
@@ -55,15 +60,15 @@ class Pattern
         if arg.zero?
           P(true)
         elsif arg.positive?
-          new(ANY, arg)
+          new(ANY, data: arg)
         else
           # "Does not match n characters"
-          -new(ANY, -arg)
+          -new(ANY, data: -arg)
         end
       when FalseClass, TrueClass
-        new(LITERAL, arg)
+        new(LITERAL, data: arg)
       when Hash
-        new(GRAMMAR, arg)
+        new(GRAMMAR, data: arg)
       else
         raise "Pattern.P does not support argument #{arg}"
       end
@@ -83,7 +88,7 @@ class Pattern
 
       result = ranges.map{ check.call(_1) }.reduce { |memo, operand| charset_union(memo, operand) }
 
-      Pattern.new(CHARSET, result)
+      Pattern.new(CHARSET, data: result)
     end
 
     # An "open call" reference to a rule in a grammar. As we don't have the grammar yet - it is available in full only when we are
@@ -95,7 +100,7 @@ class Pattern
     #    - strings are turned into symbox
     def V(ref)
       ref = ref.to_sym if ref.is_a?(String)
-      Pattern.new(OPEN_CALL, ref)
+      Pattern.new(OPEN_CALL, data: ref)
     end
 
     def match(thing, string)
@@ -136,9 +141,6 @@ class Pattern
     left
   end
 
-  # sometimes it is more natural to call it the data
-  alias data child
-
   ########################################
   # Operator overloading
   #
@@ -154,9 +156,9 @@ class Pattern
     other = fix_type(other)
 
     # true is the identity for *
-    if other.type == LITERAL && other.child == true
+    if other.type == LITERAL && other.data == true
       return self
-    elsif type == LITERAL && child == true
+    elsif type == LITERAL && data == true
       return other
     end
 
@@ -169,11 +171,11 @@ class Pattern
 
     if type == CHARSET && other.type == CHARSET
       # Take the union of the charsets
-      Pattern.new(CHARSET, charset_union(data, other.data))
+      Pattern.S(charset_union(data, other.data))
     elsif type == ORDERED_CHOICE
       # rejigger to make this operation right-associative which makes for more efficient compiled code. See Ierusalimschy 4.2
       left + (right + other)
-    elsif other.type == LITERAL && other.child == false
+    elsif other.type == LITERAL && other.data == false
       # false is the right-identity for +
       self
     else
@@ -225,10 +227,10 @@ class Pattern
     other = fix_type(other)
 
     if type == CHARSET && other.type == CHARSET
-      new_cs = charset_difference(child, other.child)
+      new_cs = charset_difference(data, other.data)
       return Pattern.P(false) if new_cs.is_a?(Set) && new_cs.empty?
 
-      return Pattern.new(CHARSET, new_cs)
+      return Pattern.S(new_cs)
     end
 
     # Otherwise we use -p2 * p1: p2 doesn't match here followed by p1 does match here
@@ -377,7 +379,7 @@ class Pattern
       raise 'OPEN_CALL node appears outside of a grammar'
     when CALL
       # This is symbolic target for now. It will be converted to a numeric offset during GRAMMAR analysis
-      prog << Instruction.new(i::CALL, offset: extra)
+      prog << Instruction.new(i::CALL, offset: data)
     when ORDERED_CHOICE
       p1 = left.program
       p2 = right.program
@@ -414,8 +416,8 @@ class Pattern
       start_line_of_nonterminal = {}
       full_rule_code = []
 
-      data.each_with_index do |rule, idx|
-        nonterminal = rule.extra
+      child.each_with_index do |rule, idx|
+        nonterminal = rule.data
         rule_pattern = rule.left
         start_line_of_nonterminal[nonterminal] = 2 + full_rule_code.size
         full_rule_code += rule_pattern.program + [Instruction.new(i::RETURN)]
@@ -458,15 +460,15 @@ class Pattern
   ########################################
   # Misc
 
-  def initialize(type, left, right = nil, extra: nil)
+  def initialize(type, left = nil, right = nil, data: nil)
     raise "Bad node type #{type}" unless NODE_TYPES.include?(type)
 
     @type = type
     @left = left
     @right = right
 
-    # CALL uses this for the nonterminal
-    @extra = extra
+    # When we have information that isn't a pattern
+    @data = data
 
     sanity_check
 
@@ -487,7 +489,7 @@ class Pattern
 
     @type = CALL
     @left = rule
-    @extra = ref
+    @data = ref
 
     # We must check these again when needed rather than use the memoized values
     [:@nullable, :@nofail].each do |ivar|
@@ -499,25 +501,29 @@ class Pattern
     case type
     when CHARSET
       right.must_be nil
-      left.must_be_a(Set, Range)
+      left.must_be nil
+      data.must_be_a(Set, Range)
     when LITERAL
       right.must_be nil
-      left.must_be_in(true, false)
+      left.must_be nil
+      data.must_be_in(true, false)
     when GRAMMAR
       right.must_be nil
-      left.must_be_a(Hash)
-      left.must_not.empty?
+      left.must_be nil
+      data.must_be_a(Hash)
+      data.must_not.empty?
     when OPEN_CALL
       right.must_be nil
-      left.must_not.negative? if left.is_a?(Integer)
+      left.must_be nil
+      data.must_not.negative? if left.is_a?(Integer)
     when CALL
-      left_must_be
+      left_must_be_a(Rule)
       right.must_be nil
-      extra.must_be
+      data.must_be
     when RULE
       left.must_be_a Pattern
       right.must_be nil
-      extra.must_be
+      data.must_be
     end
   end
 
@@ -537,7 +543,7 @@ class Pattern
     @nonterminal_indices = {}
     @nonterminal_by_index = []
 
-    grammar_hash = child.transform_values!{ Pattern.P(_1) }
+    grammar_hash = data.transform_values!{ Pattern.P(_1) }
     grammar_hash.transform_keys! { |key| key.is_a?(String) ? key.to_sym : key }
 
     rule_hash = {}
@@ -547,7 +553,7 @@ class Pattern
       nonterminal, rule_pattern = rule
       raise "Nonterminal #{nonterminal} appears twice in grammar" if @nonterminal_indices[nonterminal]
 
-      rule = Pattern.new(RULE, rule_pattern, extra: nonterminal)
+      rule = Pattern.new(RULE, rule_pattern, data: nonterminal)
 
       rule_list << rule
       rule_hash[nonterminal] = rule
@@ -557,6 +563,7 @@ class Pattern
     end
 
     @left = rule_list
+    @data = nil # we don't need the Hash any more
 
     # TODO: redo this. I don't like the idea of using a vistor to find the open_call nodes while we are modifiying in-place. It
     # works but feels fragile.
@@ -601,7 +608,7 @@ class Pattern
         to_do << node.left
         to_do << node.right
       when GRAMMAR
-        node.data.each do |rule|
+        node.child.each do |rule|
           rule.type.must_be RULE
           to_do << rule.child
         end
@@ -698,9 +705,9 @@ class Pattern
       raise "Not a grammar!" unless grammar.type == GRAMMAR
 
       # /* check infinite loops inside rules */
-      grammar.data.each do |rule|
+      grammar.child.each do |rule|
         verify_rule(rule)
-        raise "Grammar has potential infinite loop in rule '#{rule.extra}'" if loops?(rule)
+        raise "Grammar has potential infinite loop in rule '#{rule.data}'" if loops?(rule)
       end
     end
 
@@ -742,7 +749,7 @@ class Pattern
           local_rec.call(pattern.left, num_rules_seen)
           local_rec.call(pattern.right, num_rules_seen)
         when RULE
-          raise "rule '#{pattern.extra}' may be left-recursive" if rules_seen[0...num_rules_seen].include?(pattern)
+          raise "rule '#{pattern.data}' may be left-recursive" if rules_seen[0...num_rules_seen].include?(pattern)
 
           num_rules_seen += 1
           rules_seen[num_rules_seen] = pattern
