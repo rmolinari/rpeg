@@ -20,7 +20,9 @@ require 'ostruct'
 #     - "n or more occurrences of patt" when n is non-negative
 #     - "fewer than -n occurrences of patt" when n is negative
 class Pattern
-  NODE_TYPES = %i[charset string any seq ordered_choice repeat not and literal grammar open_call rule call].freeze
+  NODE_TYPES = %i[charset string any seq ordered_choice repeated not and literal grammar open_call rule call].each do |op|
+    const_set op.upcase, op
+  end
 
   attr_reader :type, :left, :right, :extra
 
@@ -29,7 +31,7 @@ class Pattern
     def S(string)
       return P(false) if string.empty?
 
-      new(:charset, Set.new(string.chars))
+      new(CHARSET, Set.new(string.chars))
     end
 
     # Take argument and turn it into a pattern
@@ -45,7 +47,7 @@ class Pattern
         if arg.empty?
           P(true)
         else
-          new(:string, arg)
+          new(STRING, arg)
         end
       when Integer
         # When n >= 0, match at least n chars.
@@ -53,15 +55,15 @@ class Pattern
         if arg.zero?
           P(true)
         elsif arg.positive?
-          new(:any, arg)
+          new(ANY, arg)
         else
           # "Does not match n characters"
-          -new(:any, -arg)
+          -new(ANY, -arg)
         end
       when FalseClass, TrueClass
-        new(:literal, arg)
+        new(LITERAL, arg)
       when Hash
-        new(:grammar, arg)
+        new(GRAMMAR, arg)
       else
         raise "Pattern.P does not support argument #{arg}"
       end
@@ -81,7 +83,7 @@ class Pattern
 
       result = ranges.map{ check.call(_1) }.reduce { |memo, operand| charset_union(memo, operand) }
 
-      Pattern.new(:charset, result)
+      Pattern.new(CHARSET, result)
     end
 
     # An "open call" reference to a rule in a grammar. As we don't have the grammar yet - it is available in full only when we are
@@ -93,7 +95,7 @@ class Pattern
     #    - strings are turned into symbox
     def V(ref)
       ref = ref.to_sym if ref.is_a?(String)
-      Pattern.new(:open_call, ref)
+      Pattern.new(OPEN_CALL, ref)
     end
 
     def match(thing, string)
@@ -119,7 +121,7 @@ class Pattern
 
   # Return the index just after the matching prefix of str or null if there is no match
   def match(str)
-    machine = ParsingMachine.new(program + [Instruction.new(:end)], str)
+    machine = ParsingMachine.new(program + [Instruction.new(Instruction::OP_END)], str)
     machine.run
 
     return machine.final_index if machine.success?
@@ -152,30 +154,30 @@ class Pattern
     other = fix_type(other)
 
     # true is the identity for *
-    if other.type == :literal && other.child == true
+    if other.type == LITERAL && other.child == true
       return self
-    elsif type == :literal && child == true
+    elsif type == LITERAL && child == true
       return other
     end
 
-    Pattern.new(:seq, self, other)
+    Pattern.new(SEQ, self, other)
   end
 
   # p1 + p2 is ordered choice: if p1 matches we match, otherwise try matching on p2
   def +(other)
     other = fix_type(other)
 
-    if type == :charset && other.type == :charset
+    if type == CHARSET && other.type == CHARSET
       # Take the union of the charsets
-      Pattern.new(:charset, charset_union(data, other.data))
-    elsif type == :ordered_choice
+      Pattern.new(CHARSET, charset_union(data, other.data))
+    elsif type == ORDERED_CHOICE
       # rejigger to make this operation right-associative which makes for more efficient compiled code. See Ierusalimschy 4.2
       left + (right + other)
-    elsif other.type == :literal && other.child == false
+    elsif other.type == LITERAL && other.child == false
       # false is the right-identity for +
       self
     else
-      Pattern.new(:ordered_choice, self, other)
+      Pattern.new(ORDERED_CHOICE, self, other)
     end
   end
 
@@ -187,7 +189,7 @@ class Pattern
       # So, we represent this by a sequence of num occurrences, followed by a zero-or-more
       raise "Pattern may match 0-length string so repetition may lead to an infinite loop" if nullable?
 
-      patt = Pattern.new(:repeat, self) # this repeats 0 or more times
+      patt = Pattern.new(REPEATED, self) # this repeats 0 or more times
       while n.positive?
         patt = self * patt
         n -= 1
@@ -206,14 +208,14 @@ class Pattern
   # Unary negation represents "does not match". So -patt says that there is no match at the current position and we don't consume
   # any of the string
   def -@
-    Pattern.new(:not, self)
+    Pattern.new(NOT, self)
   end
 
   # Unary "and": pattern matches here (without consuming any input)
   #
   # Ierusalimschy points out that &patt can be implemented as --patt, but there is an optimization for the VM, so we preserve it
   def +@
-    Pattern.new(:and, self)
+    Pattern.new(AND, self)
   end
 
   # Difference is "this but not that". So p1 - p2 matches if p1 does and p2 doesn't
@@ -222,11 +224,11 @@ class Pattern
   def -(other)
     other = fix_type(other)
 
-    if type == :charset && other.type == :charset
+    if type == CHARSET && other.type == CHARSET
       new_cs = charset_difference(child, other.child)
       return Pattern.P(false) if new_cs.is_a?(Set) && new_cs.empty?
 
-      return Pattern.new(:charset, new_cs)
+      return Pattern.new(CHARSET, new_cs)
     end
 
     # Otherwise we use -p2 * p1: p2 doesn't match here followed by p1 does match here
@@ -280,24 +282,24 @@ class Pattern
 
     # We don't use Pattern.visit because the order is wrong
     case type
-    when :charset
+    when CHARSET
       result << "#{type_s}: #{data.join}"
-    when :string, :any
+    when STRING, ANY
       result << "String: #{data}"
-    when :literal
+    when LITERAL
       result << "Literal: #{data.inspect}"
-    when :open_call
+    when OPEN_CALL
       result << "OpenCall: #{data}"
-    when :call
+    when CALL
       result << "Call: #{extra}"
-    when :seq, :ordered_choice
-      result << (type == :seq ? "Seq:" : "Ordered Choice:")
+    when SEQ, ORDERED_CHOICE
+      result << (type == SEQ ? "Seq:" : "Ordered Choice:")
       do_sub_pattern.call(left)
       do_sub_pattern.call(right)
-    when :repeat, :not, :and
+    when REPEATED, NOT, AND
       result << type_s
       do_sub_pattern.call(child)
-    when :grammar
+    when GRAMMAR
       result << "Grammar:"
       first = true
       data.each do |nonterminal, rule_pattern|
@@ -332,14 +334,14 @@ class Pattern
 
   def num_children
     case type
-    when :charset, :string, :any, :literal, :open_call
+    when CHARSET, STRING, ANY, LITERAL, OPEN_CALL
       0
-    when :repeat, :and, :not, :call, :rule
+    when REPEATED, AND, NOT, CALL, RULE
       1
-    when :seq, :ordered_choice
+    when SEQ, ORDERED_CHOICE
       2
-    when :grammar
-      raise "#num_children isn't meaningful for :grammar nodes"
+    when GRAMMAR
+      raise "#num_children isn't meaningful for GRAMMAR nodes"
     end
   end
 
@@ -349,62 +351,66 @@ class Pattern
   def program
     return @program if @program
 
+    # shorthand
+    i = Instruction
+
     prog = []
     case type
-    when :charset
-      prog << Instruction.new(:charset, Set.new(data))
-    when :string
+    when CHARSET
+      prog << Instruction.new(i::CHARSET, data: Set.new(data))
+    when STRING
       data.chars.each do |ch|
-        prog << Instruction.new(:char, ch)
+        prog << Instruction.new(i::CHAR, data: ch)
       end
-    when :any
-      prog << Instruction.new(:any, data)
-    when :seq
+    when ANY
+      prog << Instruction.new(i::ANY, data: data)
+    when SEQ
 
       # Just concatenate the code
       prog = left.program + right.program
-    when :literal
+    when LITERAL
       # if data = true then we always succeed, which means we don't have to do anything at all
-      prog << Instruction.new(:fail) unless data
-    when :open_call
-      # we resolved these to :call when the grammar node was created. So if we see one now it is because it was not contained in a
+      prog << Instruction.new(i::FAIL) unless data
+    when OPEN_CALL
+      # we resolved these to CALL when the grammar node was created. So if we see one now it is because it was not contained in a
       # grammar.
-      raise ':open_call node appears outside of a grammar'
-    when :call
-      prog << Instruction.new(:call, extra)
-    when :ordered_choice
+      raise 'OPEN_CALL node appears outside of a grammar'
+    when CALL
+      # This is symbolic target for now. It will be converted to a numeric offset during GRAMMAR analysis
+      prog << Instruction.new(i::CALL, offset: extra)
+    when ORDERED_CHOICE
       p1 = left.program
       p2 = right.program
 
-      prog << Instruction.new(:choice, 2 + p1.size)
+      prog << Instruction.new(i::CHOICE, offset: 2 + p1.size)
       prog += p1
-      prog << Instruction.new(:commit, 1 + p2.size)
+      prog << Instruction.new(i::COMMIT, offset: 1 + p2.size)
       prog += p2
-    when :repeat
+    when REPEATED
       p = child.program
 
-      if child.type == :charset
+      if child.type == CHARSET
         # Special, quicker handling when the thing we are repeated over is a charset. See Ierusalimschy 4.3
-        prog << Instruction.new(:span, child.data)
+        prog << Instruction.new(i::SPAN, data: child.data)
       else
-        prog << Instruction.new(:choice, 2 + p.size)
+        prog << Instruction.new(i::CHOICE, offset: 2 + p.size)
         prog += p
-        prog << Instruction.new(:partial_commit, -p.size)
+        prog << Instruction.new(i::PARTIAL_COMMIT, offset: -p.size)
       end
-    when :not
+    when NOT
       p = child.program
 
-      prog << Instruction.new(:choice, 2 + p.size)
+      prog << Instruction.new(i::CHOICE, offset: 2 + p.size)
       prog += p
-      prog << Instruction.new(:fail_twice)
-    when :and
+      prog << Instruction.new(i::FAIL_TWICE)
+    when AND
       p = child.program
 
-      prog << Instruction.new(:choice, 2 + p.size)
+      prog << Instruction.new(i::CHOICE, offset: 2 + p.size)
       prog += p
-      prog << Instruction.new(:back_commit, 2)
-      prog << Instruction.new(:fail)
-    when :grammar
+      prog << Instruction.new(i::BACK_COMMIT, offset: 2)
+      prog << Instruction.new(i::FAIL)
+    when GRAMMAR
       start_line_of_nonterminal = {}
       full_rule_code = []
 
@@ -412,34 +418,34 @@ class Pattern
         nonterminal = rule.extra
         rule_pattern = rule.left
         start_line_of_nonterminal[nonterminal] = 2 + full_rule_code.size
-        full_rule_code += rule_pattern.program + [Instruction.new(:return)]
+        full_rule_code += rule_pattern.program + [Instruction.new(i::RETURN)]
       end
 
-      prog << Instruction.new(:call, @nonterminal_by_index[0]) # call the first nonterminal
-      prog << Instruction.new(:jump, 1 + full_rule_code.size) # we are done: jump to the line after the grammar's program
+      prog << Instruction.new(i::CALL, offset: @nonterminal_by_index[0]) # call the first nonterminal
+      prog << Instruction.new(i::JUMP, offset: 1 + full_rule_code.size) # we are done: jump to the line after the grammar's program
       prog += full_rule_code
 
-      # Now close the :call instructions. THe :open_call nodes were analyzed when the :grammar node was created but we still need to
+      # Now close the CALL instructions. THe OPEN_CALL nodes were analyzed when the GRAMMAR node was created but we still need to
       # calculate line offsets
       prog.each_with_index do |instr, idx|
-        next unless instr.op_code == :call
+        next unless instr.op_code == CALL
 
-        nonterminal = instr.arg1
+        nonterminal = instr.offset
 
-        # arg1 is the nonterminal
         start_line = start_line_of_nonterminal[nonterminal]
         raise "Nonterminal #{nonterminal} does not have a rule in grammar" unless start_line
 
         offset = start_line - idx
 
-        # We replaced :open_call with :call. But, if the following instruction is a :return this a tail call and we can eliminate
-        # the stack push by using a :jump instead of the call. This leaves the following :return a dead statement which we will
-        # never reach. We change it to a bogus op code as a sanity check: if the VM ever reaches it we have made an error somewhere.
+        # We replaced OPEN_CALL with CALL earlier in #fix_up_grammar. But, if the following instruction is a :return this a tail
+        # call and we can eliminate the stack push by using a :jump instead of the call. This leaves the following :return a dead
+        # statement which we will never reach. We change it to a bogus op code as a sanity check: if the VM ever reaches it we have
+        # made an error somewhere.
         if prog[idx + 1] && prog[idx + 1].op_code == :return
-          prog[idx] = Instruction.new(:jump, offset)
-          prog[idx + 1] = Instruction.new(:unreachable)
+          prog[idx] = Instruction.new(i::JUMP, offset: offset)
+          prog[idx + 1] = Instruction.new(i::UNREACHABLE)
         else
-          prog[idx] = Instruction.new(:call, offset)
+          prog[idx] = Instruction.new(i::CALL, offset: offset)
         end
       end
     else
@@ -459,12 +465,12 @@ class Pattern
     @left = left
     @right = right
 
-    # :call uses this for the nonterminal
+    # CALL uses this for the nonterminal
     @extra = extra
 
     sanity_check
 
-    if type == :grammar
+    if type == GRAMMAR
       fix_up_grammar
 
       Analysis.verify_grammar(self)
@@ -475,11 +481,11 @@ class Pattern
 
   # Special operation when closing open calls
   def convert_open_call_to_call!(rule, ref)
-    raise "Cannot convert pattern to :call" unless type == :open_call
-    raise "Must give rule and nonterminal symbol to :call pattern" unless rule && ref
-    raise "Rule for :call pattern must be a rule, got #{rule.type}" unless rule.type == :rule
+    raise "Cannot convert pattern to CALL" unless type == OPEN_CALL
+    raise "Must give rule and nonterminal symbol to CALL pattern" unless rule && ref
+    raise "Rule for CALL pattern must be a rule, got #{rule.type}" unless rule.type == RULE
 
-    @type = :call
+    @type = CALL
     @left = rule
     @extra = ref
 
@@ -491,24 +497,24 @@ class Pattern
 
   private def sanity_check
     case type
-    when :charset
+    when CHARSET
       right.must_be nil
       left.must_be_a(Set, Range)
-    when :literal
+    when LITERAL
       right.must_be nil
       left.must_be_in(true, false)
-    when :grammar
+    when GRAMMAR
       right.must_be nil
       left.must_be_a(Hash)
       left.must_not.empty?
-    when :open_call
+    when OPEN_CALL
       right.must_be nil
       left.must_not.negative? if left.is_a?(Integer)
-    when :call
+    when CALL
       left_must_be
       right.must_be nil
       extra.must_be
-    when :rule
+    when RULE
       left.must_be_a Pattern
       right.must_be nil
       extra.must_be
@@ -519,14 +525,14 @@ class Pattern
   # - make sure each rule pattern is actually a pattern.
   #   - since we can specify rules as strings, say, or subgrammars (as hash) we need to step in here
   # - the hash table of rules is replaced with a list of [nonterminal, pattern] pairs
-  # - :opencall(v) patterns are replaced with :call(rule) patterns
-  # - convert the hashtable of rules to a same-order list of :rule nodes.
+  # - :opencall(v) patterns are replaced with CALL(rule) patterns
+  # - convert the hashtable of rules to a same-order list of RULE nodes.
   #
   # We set up
   #  @nonterminal_indices: map nonterminal symbols to their index (0, 1, ...)
   #  @nonterminal_by_index: may indices to the corresopnding nonterminal
   private def fix_up_grammar
-    raise "Bad type for #fix_up_grammar" unless type == :grammar
+    raise "Bad type for #fix_up_grammar" unless type == GRAMMAR
 
     @nonterminal_indices = {}
     @nonterminal_by_index = []
@@ -541,7 +547,7 @@ class Pattern
       nonterminal, rule_pattern = rule
       raise "Nonterminal #{nonterminal} appears twice in grammar" if @nonterminal_indices[nonterminal]
 
-      rule = Pattern.new(:rule, rule_pattern, extra: nonterminal)
+      rule = Pattern.new(RULE, rule_pattern, extra: nonterminal)
 
       rule_list << rule
       rule_hash[nonterminal] = rule
@@ -555,7 +561,7 @@ class Pattern
     # TODO: redo this. I don't like the idea of using a vistor to find the open_call nodes while we are modifiying in-place. It
     # works but feels fragile.
     Pattern.visit(self) do |node|
-      next unless node.type == :open_call
+      next unless node.type == OPEN_CALL
 
       ref = node.data
       if ref.is_a?(Integer) && ref >= 0
@@ -587,20 +593,195 @@ class Pattern
       yield node
 
       case node.type
-      when :charset, :string, :any, :literal, :call, :open_call
+      when CHARSET, STRING, ANY, LITERAL, CALL, OPEN_CALL
       # nothing more to do
-      when :repeat, :not, :and, :rule
+      when REPEATED, NOT, AND, RULE
         to_do << node.child
-      when :ordered_choice, :seq
+      when ORDERED_CHOICE, SEQ
         to_do << node.left
         to_do << node.right
-      when :grammar
+      when GRAMMAR
         node.data.each do |rule|
-          rule.type.must_be :rule
+          rule.type.must_be RULE
           to_do << rule.child
         end
       else
         raise "Unhandled pattern type #{node.type}"
+      end
+    end
+  end
+
+  module Analysis
+    extend self
+
+    CHECK_PREDICATES = %i[nullable nofail].freeze
+
+    # These two are cached in pattern.nullable? and pattern.nofail?
+    def nullable?(pattern)
+      check_pred(Pattern.P(pattern), :nullable)
+    end
+
+    def nofail?(pattern)
+      check_pred(Pattern.P(pattern), :nofail)
+    end
+
+    # The is lpeg's checkaux from lpcode.c. Comment from that function (reformatted):
+    #
+    # /*
+    # ** Checks how a pattern behaves regarding the empty string, in one of two different ways:
+    #
+    # ** - A pattern is *nullable* if it can match without consuming any character;
+    # ** - A pattern is *nofail* if it never fails for any string (including the empty string).
+    #
+    # ** The difference is only for predicates and run-time captures; for other patterns, the two properties are equivalent.  (With
+    # ** predicates, &'a' is nullable but not nofail. Of course, nofail => nullable.)
+    #
+    # ** These functions are all convervative in the following way:
+    # **    p is nullable => nullable(p)
+    # **    nofail(p) => p cannot fail
+    #
+    # ** The function assumes that TOpenCall is not nullable; this will be checked again when the grammar is fixed.  Run-time captures
+    # ** can do whatever they want, so the result is conservative.
+    # */
+    #
+    # TODO:
+    #  - implement for our equivalent of TRep, TRunTime, TCaputre, etc. when we implement them
+    def check_pred(pattern, pred)
+      raise "Bad check predicate #{pred}" unless CHECK_PREDICATES.include?(pred)
+
+      # loop to eliminate some tail calls, as in the LPEG code. I don't think it's really necessary - as my implementation is not
+      # going to be fast overall - but let's try a new technique.
+      loop do
+        case pattern.type
+        when STRING, CHARSET, ANY, OPEN_CALL
+          # Not nullable; for open_call this is a blind assumption
+          return false
+        when LITERAL
+          # false is not nullable, true is nofail
+          return pattern.data
+        when REPEATED
+          return true # we never fail, as we can match zero occurrences
+        when NOT
+          # can match empty, but can fail
+          return (pred != :nofail)
+        when AND
+          # can match empty; can fail exactly when body can
+          return true if pred == :nullable
+
+          pattern = pattern.child.must_be
+        when SEQ
+          return false unless check_pred(pattern.left, pred)
+
+          pattern = pattern.right.must_be
+        when ORDERED_CHOICE
+          return true if check_pred(pattern.left, pred)
+
+          pattern = pattern.right.must_be
+        when GRAMMAR
+          # Strings are matched by the initial nonterminal
+          first_rule = pattern.child.first
+          first_rule.type.must_be RULE
+          pattern = first_rule.child.must_be
+        when CALL
+          # The call's rule is in child
+          pattern = pattern.child.must_be
+        when RULE
+          # Rule's pattern is in child
+          pattern = pattern.child.must_be
+        else
+          raise "Bad pattern type #{pattern.type}"
+        end
+      end
+    end
+
+    def verify_grammar(grammar)
+      raise "Not a grammar!" unless grammar.type == GRAMMAR
+
+      # /* check infinite loops inside rules */
+      grammar.data.each do |rule|
+        verify_rule(rule)
+        raise "Grammar has potential infinite loop in rule '#{rule.extra}'" if loops?(rule)
+      end
+    end
+
+    # Sanity checks from the LPEG sources. We check if a rule can be left-recursive, i.e., whether we can return to the rule without
+    # consuming any input. The plan is to walk the tree into subtrees, possibily repetitively, whenever we see we can do so without
+    # consuming any input.
+    #
+    # LPEG comment follows. Note that we check for nullability directly for sanity's sake.
+    #
+    # /*
+    # ** Check whether a rule can be left recursive; raise an error in that
+    # ** case; otherwise return 1 iff pattern is nullable.
+    # ** The return value is used to check sequences, where the second pattern
+    # ** is only relevant if the first is nullable.
+    # ** Parameter 'nb' works as an accumulator, to allow tail calls in
+    # ** choices. ('nb' true makes function returns true.)
+    # ** Parameter 'passed' is a list of already visited rules, 'npassed'
+    # ** counts the elements in 'passed'.
+    # ** Assume ktable at the top of the stack.
+    # */
+    def verify_rule(rule)
+      rules_seen = []
+
+      local_rec = lambda do |pattern, num_rules_seen|
+        case pattern.type
+        when STRING, CHARSET, ANY, LITERAL
+        # no op
+        when NOT, AND, REPEATED
+          # nullable, so keep going
+          local_rec.call(pattern.child, num_rules_seen)
+        when CALL
+          local_rec.call(pattern.child, num_rules_seen)
+        when SEQ
+          local_rec.call(pattern.left, num_rules_seen)
+          # only check 2nd child if first is nullable
+          local_rec.call(pattern.right, num_rules_seen) if pattern.left.nullable?
+        when ORDERED_CHOICE
+          # must check both children
+          local_rec.call(pattern.left, num_rules_seen)
+          local_rec.call(pattern.right, num_rules_seen)
+        when RULE
+          raise "rule '#{pattern.extra}' may be left-recursive" if rules_seen[0...num_rules_seen].include?(pattern)
+
+          num_rules_seen += 1
+          rules_seen[num_rules_seen] = pattern
+          local_rec.call(pattern.child, num_rules_seen)
+        when GRAMMAR
+        # LPEG says: /* sub-grammar cannot be left recursive */
+        # But why?
+        else
+          raise "Unhandled case #{pattern.type} in verify_rule"
+        end
+      end
+
+      local_rec.call(rule, 0)
+    end
+
+    # From lptree.c
+    #
+    # /*
+    # ** Check whether a tree has potential infinite loops
+    # */
+    def loops?(pattern)
+      return true if pattern.type == REPEATED && pattern.child.nullable?
+
+      # /* sub-grammars already checked */
+      #
+      # The comment refers to verify_grammar
+      return false if pattern.type == GRAMMAR
+
+      # left-recursive grammar loops are handled in verifygrammar
+      return false if pattern.type == CALL
+
+      case pattern.num_children
+      when 1
+        loops?(pattern.child)
+      when 2
+        fst = loops?(pattern.left)
+        return true if fst
+
+        loops?(pattern.right)
       end
     end
   end
@@ -630,202 +811,58 @@ class Pattern
   end
 end
 
-module Analysis
-  extend self
-
-  CHECK_PREDICATES = %i[nullable nofail].freeze
-
-  # These two are cached in pattern.nullable? and pattern.nofail?
-  def nullable?(pattern)
-    check_pred(Pattern.P(pattern), :nullable)
-  end
-
-  def nofail?(pattern)
-    check_pred(Pattern.P(pattern), :nofail)
-  end
-
-  # The is lpeg's checkaux from lpcode.c. Comment from that function (reformatted):
-  #
-  # /*
-  # ** Checks how a pattern behaves regarding the empty string, in one of two different ways:
-  #
-  # ** - A pattern is *nullable* if it can match without consuming any character;
-  # ** - A pattern is *nofail* if it never fails for any string (including the empty string).
-  #
-  # ** The difference is only for predicates and run-time captures; for other patterns, the two properties are equivalent.  (With
-  # ** predicates, &'a' is nullable but not nofail. Of course, nofail => nullable.)
-  #
-  # ** These functions are all convervative in the following way:
-  # **    p is nullable => nullable(p)
-  # **    nofail(p) => p cannot fail
-  #
-  # ** The function assumes that TOpenCall is not nullable; this will be checked again when the grammar is fixed.  Run-time captures
-  # ** can do whatever they want, so the result is conservative.
-  # */
-  #
-  # TODO:
-  #  - implement for our equivalent of TRep, TRunTime, TCaputre, etc. when we implement them
-  def check_pred(pattern, pred)
-    raise "Bad check predicate #{pred}" unless CHECK_PREDICATES.include?(pred)
-
-    # loop to eliminate some tail calls, as in the LPEG code. I don't think it's really necessary - as my implementation is not
-    # going to be fast overall - but let's try a new technique.
-    loop do
-      case pattern.type
-      when :string, :charset, :any, :open_call
-        # Not nullable; for open_call this is a blind assumption
-        return false
-      when :literal
-        # false is not nullable, true is nofail
-        return pattern.data
-      when :repeat
-        return true # we never fail, as we can match zero occurrences
-      when :not
-        # can match empty, but can fail
-        return (pred != :nofail)
-      when :and
-        # can match empty; can fail exactly when body can
-        return true if pred == :nullable
-
-        pattern = pattern.child.must_be
-      when :seq
-        return false unless check_pred(pattern.left, pred)
-
-        pattern = pattern.right.must_be
-      when :ordered_choice
-        return true if check_pred(pattern.left, pred)
-
-        pattern = pattern.right.must_be
-      when :grammar
-        # Strings are matched by the initial nonterminal
-        first_rule = pattern.child.first
-        first_rule.type.must_be :rule
-        pattern = first_rule.child.must_be
-      when :call
-        # The call's rule is in child
-        pattern = pattern.child.must_be
-      when :rule
-        # Rule's pattern is in child
-        pattern = pattern.child.must_be
-      else
-        raise "Bad pattern type #{pattern.type}"
-      end
-    end
-  end
-
-  def verify_grammar(grammar)
-    raise "Not a grammar!" unless grammar.type == :grammar
-
-    # /* check infinite loops inside rules */
-    grammar.data.each do |rule|
-      verify_rule(rule)
-      raise "Grammar has potential infinite loop in rule '#{rule.extra}'" if loops?(rule)
-    end
-  end
-
-  # Sanity checks from the LPEG sources. We check if a rule can be left-recursive, i.e., whether we can return to the rule without
-  # consuming any input. The plan is to walk the tree into subtrees, possibily repetitively, whenever we see we can do so without
-  # consuming any input.
-  #
-  # LPEG comment follows. Note that we check for nullability directly for sanity's sake.
-  #
-  # /*
-  # ** Check whether a rule can be left recursive; raise an error in that
-  # ** case; otherwise return 1 iff pattern is nullable.
-  # ** The return value is used to check sequences, where the second pattern
-  # ** is only relevant if the first is nullable.
-  # ** Parameter 'nb' works as an accumulator, to allow tail calls in
-  # ** choices. ('nb' true makes function returns true.)
-  # ** Parameter 'passed' is a list of already visited rules, 'npassed'
-  # ** counts the elements in 'passed'.
-  # ** Assume ktable at the top of the stack.
-  # */
-  def verify_rule(rule)
-    rules_seen = []
-
-    local_rec = lambda do |pattern, num_rules_seen|
-      case pattern.type
-      when :string, :charset, :any, :literal
-        # no op
-      when :not, :and, :repeat
-        # nullable, so keep going
-        local_rec.call(pattern.child, num_rules_seen)
-      when :call
-        local_rec.call(pattern.child, num_rules_seen)
-      when :seq
-        local_rec.call(pattern.left, num_rules_seen)
-        # only check 2nd child if first is nullable
-        local_rec.call(pattern.right, num_rules_seen) if pattern.left.nullable?
-      when :ordered_choice
-        # must check both children
-        local_rec.call(pattern.left, num_rules_seen)
-        local_rec.call(pattern.right, num_rules_seen)
-      when :rule
-        raise "rule '#{pattern.extra}' may be left-recursive" if rules_seen[0...num_rules_seen].include?(pattern)
-
-        num_rules_seen += 1
-        rules_seen[num_rules_seen] = pattern
-        local_rec.call(pattern.child, num_rules_seen)
-      when :grammar
-        # LPEG says: /* sub-grammar cannot be left recursive */
-        # But why?
-      else
-        raise "Unhandled case #{pattern.type} in verify_rule"
-      end
-    end
-
-    local_rec.call(rule, 0)
-  end
-
-  # From lptree.c
-  #
-  # /*
-  # ** Check whether a tree has potential infinite loops
-  # */
-  def loops?(pattern)
-    return true if pattern.type == :repeat && pattern.child.nullable?
-
-    # /* sub-grammars already checked */
-    #
-    # The comment refers to verify_grammar
-    return false if pattern.type == :grammar
-
-    # left-recursive grammar loops are handled in verifygrammar
-    return false if pattern.type == :call
-
-    case pattern.num_children
-    when 1
-      loops?(pattern.child)
-    when 2
-      fst = loops?(pattern.left)
-      return true if fst
-
-      loops?(pattern.right)
-    end
-  end
-end
-
 # Instances are generated during program generation in Pattern and consumed in the ParsingMachine
+#
+# We don't need to slavish follow the LPEG structure - which has constraints like constant-size for C memory management and pointer
+# arithmetic - but with the need to support captures cleanly we shouldn't ignore how LPEG does it.
+#
+# - op_code: the instruction op
+# - offset: the address offset used in jumps, calls, etc.
+# - aux: extra information used by instruction like capture
+#   - in LPEG this is used to carefully pack data by bit-twiddling, etc., but we can use anything, such as structs, OpenStructs,
+#     etc., as needed
+# - data: this is called "key" in LPEG and is (I think) used to store pointers to Lua-based objects, etc.
+#   - we will just store Ruby objects here.
+#   - it contains things like the Set/Range of characters for Charset instructions, the character count for Any instructions, etc.
 class Instruction
-  OP_CODES = %i[char charset any jump choice call return commit back_commit partial_commit span end fail fail_twice unreachable].freeze
+  OP_CODES = %i[
+                 char charset any jump choice call return commit back_commit
+                 partial_commit span op_end fail fail_twice unreachable
+                ].each do |op|
+    const_set op.upcase, op
+  end
+
   OP_WIDTH = OP_CODES.map(&:length).max
 
-  attr_reader :op_code, :arg1, :arg2
+  attr_reader :op_code, :offset, :data, :aux
 
-  def initialize(op_code, arg1 = nil, arg2 = nil)
+  def initialize(op_code, offset: nil, data: nil, aux: nil)
     raise "Bad instruction op_code #{op_code}" unless OP_CODES.include?(op_code)
-    raise 'Cannot specify arg2 for Instruction without arg1' if arg2 && !arg1
 
     @op_code = op_code
-    @arg1 = arg1
-    @arg2 = arg2
+    @offset = offset
+    @data = data
+    @aux = aux
   end
 
   def to_s
-    str = "#{op_code.to_s.capitalize.rjust(OP_WIDTH + 1)}"
-    str << " #{arg1}" if arg1
-    str << ", #{arg2}" if arg2
-    str
+    return @to_s if @to_s
+
+    str = op_code.to_s.rjust(OP_WIDTH + 1)
+
+    case op_code
+    when CHAR, ANY
+      str << " #{data}"
+    when CHARSET, SPAN
+      str << " #{data.join}"
+    when JUMP, CHOICE, CALL, COMMIT, BACK_COMMIT, PARTIAL_COMMIT
+      str << " #{offset}"
+    when RETURN, OP_END, FAIL, FAIL_TWICE, UNREACHABLE
+      # no-op
+    else
+      raise "Unhandled op_code #{op_code} in Instruction#to_s"
+    end
+    @to_s = str
   end
 end
 
@@ -872,41 +909,41 @@ class ParsingMachine
         end
       end
 
+      # shorthand
+      i = Instruction
+
       case instr.op_code
-      when :char
+      when i::CHAR
         # arg1 is a single character
-        match_char_p.call(instr.arg1 == @subject[@current_subject_position])
-      when :charset
-        match_char_p.call(instr.arg1.include?(@subject[@current_subject_position]))
-      when :any
+        match_char_p.call(instr.data == @subject[@current_subject_position])
+      when i::CHARSET
+        match_char_p.call(instr.data.include?(@subject[@current_subject_position]))
+      when i::ANY
         # arg1 is the number of chars we are looking for
-        if @current_subject_position + instr.arg1 <= @subject.size
+        if @current_subject_position + instr.data <= @subject.size
           @current_instruction += 1
-          @current_subject_position += instr.arg1
+          @current_subject_position += instr.data
         else
           @current_instruction = :fail
         end
-      when :jump
-        # arg1 is an offset for the label to jump to
-        @current_instruction += instr.arg1
-      when :choice
-        # arg1 is the offset for the other side of the choice, which we push onto the stack
-        push(:state, instr.arg1)
+      when i::JUMP
+        @current_instruction += instr.offset
+      when i::CHOICE
+        # We push the offset for the other side of the choice
+        push(:state, instr.offset)
         @current_instruction += 1
-      when :call
-        # arg1 is an offset for the label to call.
-        #
+      when i::CALL
         # Call is like jump, but we push the return address onto the stack first
         push(:instruction, 1)
-        @current_instruction += instr.arg1
-      when :return
+        @current_instruction += instr.offset
+      when i::RETURN
         @current_instruction = pop(:instruction)
-      when :commit
+      when i::COMMIT
         # we pop and discard the top of the stack (which must be a triple) and then do the jump given by arg1. Even though we are
         # discarding it check that it was a full state as a sanity check.
         _ = pop(:state)
-        @current_instruction += instr.arg1
-      when :partial_commit
+        @current_instruction += instr.offset
+      when i::PARTIAL_COMMIT
         # Sort of a combination of commit (which pops) and choice (which pushes), but we just tweak the top of the stack. See
         # Ierusalimschy, sec 4.3
         stack_top = peek(:state)
@@ -915,33 +952,33 @@ class ParsingMachine
         stack_top[1] = @current_subject_position
         stack_top[2] = @capture_list.clone
 
-        @current_instruction += instr.arg1
-      when :back_commit
+        @current_instruction += instr.offset
+      when i::BACK_COMMIT
         # A combination of a fail and a commit. We backtrack, but then jump to the specified instruction rather than using the
-        # backtrack label. It's used for the :and pattern. See Ierusalimschy, 4.4
+        # backtrack label. It's used for the AND pattern. See Ierusalimschy, 4.4
         _, subject_pos, captures = pop(:state)
         @current_subject_position = subject_pos
         @capture_list = captures
-        @current_instruction += instr.arg1
-      when :span
-        # Special instruction for when we are repeating over a charset, which is common. We just consume as many maching characters
+        @current_instruction += instr.offset
+      when i::SPAN
+        # Special instruction for when i:wE are repeating over a charset, which is common. We just consume as many maching characters
         # as there are. This never fails as we might just match zero
-        @current_subject_position += 1 while instr.arg1.include?(@subject[@current_subject_position])
+        @current_subject_position += 1 while instr.data.include?(@subject[@current_subject_position])
 
         @current_instruction += 1
-      when :fail
+      when i::FAIL
         # We trigger the fail routine
         @current_instruction = :fail
-      when :fail_twice
+      when i::FAIL_TWICE
         # An optimization for the not(pattern) implementation. We pop the top of the stack and discard it, and then enter the fail
         # routine again. For sanity's sake we'll check that the thing we are popping is a :state entry. See Ierusalimschy, 4.4
         _ = pop(:state)
         @current_instruction = :fail
-      when :end
+      when i::OP_END
         @success = true
         @final_index = @current_subject_position
         done!
-      when :unreachable
+      when i::UNREACHABLE
         raise "VM reached :unreachable instruction at line #{@current_instruction}"
       else
         raise "Unsupported op code #{op_code}"
