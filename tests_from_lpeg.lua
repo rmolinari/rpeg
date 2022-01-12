@@ -108,63 +108,6 @@ checkeq(a, {"two", "words", "one", "more"})
 
 assert(m.match( basiclookfor((#m.P(b) * 1) * m.Cp()), "  (  (a)") == 7)
 
-a = {m.match(m.C(digit^1 * m.Cc"d") + m.C(letter^1 * m.Cc"l"), "123")}
-checkeq(a, {"123", "d"})
-
-a = {m.match(m.C(digit^1 * m.Cc"d") + m.C(letter^1 * m.Cc"l"), "abcd")}
-checkeq(a, {"abcd", "l"})
-
-t = {m.match({[1] = m.C(m.C(1) * m.V(1) + -1)}, "abc")}
-checkeq(t, {"abc", "a", "bc", "b", "c", "c", ""})
-
--- bug in 0.12 ('hascapture' did not check for captures inside a rule)
-do
-  local pat = m.P{
-    'S';
-    S1 = m.C('abc') + 3,
-    S = #m.V('S1')    -- rule has capture, but '#' must ignore it
-  }
-  assert(pat:match'abc' == 1)
-end
-
-
--- bug: loop in 'hascaptures'
-do
-  local p = m.C(-m.P{m.P'x' * m.V(1) + m.P'y'})
-  assert(p:match("xxx") == "")
-end
-
-
-
--- test for small capture boundary
-for i = 250,260 do
-  assert(#m.match(m.C(i), string.rep('a', i)) == i)
-  assert(#m.match(m.C(m.C(i)), string.rep('a', i)) == i)
-end
-
--- tests for any*n and any*-n
-for n = 1, 550, 13 do
-  local x_1 = string.rep('x', n - 1)
-  local x = x_1 .. 'a'
-  assert(not m.P(n):match(x_1))
-  assert(m.P(n):match(x) == n + 1)
-  assert(n < 4 or m.match(m.P(n) + "xxx", x_1) == 4)
-  assert(m.C(n):match(x) == x)
-  assert(m.C(m.C(n)):match(x) == x)
-  assert(m.P(-n):match(x_1) == 1)
-  assert(not m.P(-n):match(x))
-  assert(n < 13 or m.match(m.Cc(20) * ((n - 13) * m.P(10)) * 3, x) == 20)
-  local n3 = math.floor(n/3)
-  assert(m.match(n3 * m.Cp() * n3 * n3, x) == n3 + 1)
-end
-
--- true values
-assert(m.P(0):match("x") == 1)
-assert(m.P(0):match("") == 1)
-assert(m.C(0):match("x") == "")
-
-assert(m.match(m.C(m.P(2)^1), "abcde") == "abcd")
-p = m.Cc(0) * 1 + m.Cc(1) * 2 + m.Cc(2) * 3 + m.Cc(3) * 4
 
 
 -- test for alternation optimization
@@ -582,27 +525,6 @@ assert(not m.match(1, "", -1))
 assert(not m.match(1, "", 0))
 
 print("+")
-
-
--- tests for argument captures
-checkerr("invalid argument", m.Carg, 0)
-checkerr("invalid argument", m.Carg, -1)
-checkerr("invalid argument", m.Carg, 2^18)
-checkerr("absent extra argument #1", m.match, m.Carg(1), 'a', 1)
-assert(m.match(m.Carg(1), 'a', 1, print) == print)
-x = {m.match(m.Carg(1) * m.Carg(2), '', 1, 10, 20)}
-checkeq(x, {10, 20})
-
-assert(m.match(m.Cmt(m.Cg(m.Carg(3), "a") *
-                     m.Cmt(m.Cb("a"), function (s,i,x)
-                                        assert(s == "a" and i == 1);
-                                        return i, x+1
-                                      end) *
-                     m.Carg(2), function (s,i,a,b,c)
-                                  assert(s == "a" and i == 1 and c == nil);
-				  return i, 2*a + 3*b
-                                end) * "a",
-               "a", 1, false, 100, 1000) == 2*1001 + 3*100)
 
 
 -- tests for Lua functions

@@ -189,7 +189,7 @@ class TestsFromLpegCode < Test::Unit::TestCase
     # -- tests for argument captures
     assert_match_raises_error("Invalid argument", -> {m.Carg}, 0)
     assert_match_raises_error("Invalid argument", -> {m.Carg}, -1)
-    assert_match_raises_error("Invalid argument", -> {m.Carg}, 2^18)
+    assert_match_raises_error("Invalid argument", -> {m.Carg}, 2**18)
     assert_match_raises_error("absent extra argument #1", m.Carg(1), 'a', 0)
     assert_equal a_lambda, m.match(m.Carg(1), 'a', 1, a_lambda)
     assert_equal [10, 20], m.match(m.Carg(1) * m.Carg(2), '', 0, 10, 20)
@@ -204,6 +204,74 @@ class TestsFromLpegCode < Test::Unit::TestCase
     # 				  return i, 2*a + 3*b
     #                                 end) * "a",
     #                "a", 1, false, 100, 1000) == 2*1001 + 3*100)
+  end
+
+  def test_simple_captures
+    assert_equal ["123", "d"], m.match(m.C(digit**1 * m.Cc("d")) + m.C(letter**1 * m.Cc("l")), "123")
+    assert_equal ["abcd", "l"], m.match(m.C(digit**1 * m.Cc("d")) + m.C(letter**1 * m.Cc("l")), "abcd")
+
+    # $do_it = true
+    assert_equal ["abc", "a", "bc", "b", "c", "c", ""], m.match({ S: m.C(m.C(1) * m.V(0) + -1) }, "abc")
+
+    # -- bug in 0.12 ('hascapture' did not check for captures inside a rule)
+    #
+    # What does this mean?
+    #
+    # Oh. I think it is just the fact that we don't actually consume any of the subject here: we are just testing that the string is
+    # matched by S1, and not actually consuming the string. So we don't have a capture in the result and just return 0 for an empty
+    # match.
+    patt1 = m.P({
+      S: +m.V('S1'),    # -- rule has capture, but '#' must ignore it
+      S1: m.C('abc') + 3
+    })
+    assert_equal 0, patt1.match('abc')
+
+    # -- bug: loop in 'hascaptures'
+    #
+    # Note: I haven't implemented hascaptures yet
+    patt2 = m.C(-m.P({ S: m.P('x') * m.V(0) + m.P('y') }))
+    assert_equal "", patt2.match("xxx")
+
+    # -- test for small capture boundary
+    #
+    # The Lua test says "#m.match". On a string the # operator returns the length
+    [250, 260].each do |i|
+      assert_equal i, m.match(m.C(i), 'a' * i).length
+
+      # TODO: why should the match return the full string instead of two copies of the string?
+      #
+      # Maybe a simple capture over a simple capture like this is collapsed to one capture, because otherwise the two values would
+      # always be the same.
+      assert_equal i, m.match(m.C(m.C(i)), 'a' * i).length
+    end
+
+    # -- tests for any*n and any*-n
+    [1, 550, 13].each do |n|
+      x1 = 'x' * (n - 1)
+      x = "#{x1}a"
+      assert_nil m.P(n).match(x1)
+      assert_equal n, m.P(n).match(x)
+      assert_equal(3, m.match(m.P(n) + "xxx", x1)) if n >= 4
+
+      assert_equal x, m.C(n).match(x)
+      assert_equal x, m.C(m.C(n)).match(x)
+      assert_equal 0, m.P(-n).match(x1)
+      assert_nil m.P(-n).match(x)
+      assert_equal(20, m.match(m.Cc(20) * ((n - 13) * m.P(10)) * 3, x)) if n >= 13
+
+      n3 = n / 3
+      assert_equal n3, m.match(n3 * m.Cp() * n3 * n3, x)
+    end
+
+    # -- true values
+    assert_equal 0, m.P(0).match("x")
+    assert_equal 0, m.P(0).match("")
+    assert_equal "", m.C(0).match("x")
+
+    assert_equal "abcd", m.match(m.C(m.P(2)**1), "abcde")
+
+    # Is this a dangling pattern?
+    # p = m.Cc(0) * 1 + m.Cc(1) * 2 + m.Cc(2) * 3 + m.Cc(3) * 4
   end
 
   ## %%%

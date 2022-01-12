@@ -111,7 +111,17 @@ class Pattern
 
     # LPEG: Creates a simple capture, which captures the substring of the subject that matches patt. The captured value is a
     # string. If patt has other captures, their values are returned after this one.
+    #
+    # Note: it appears that when a simple capture is over another simple capture - like C(C(patt)) - we squeeze out the
+    # duplication. See this test at l.216 of test.lua:
+    #
+    #     assert(#m.match(m.C(m.C(i)), string.rep('a', i)) == i)
+    #
+    # (In lua the # operator gives the size of a string or table)
     def C(pattern)
+      pattern = P(pattern)
+      return pattern if pattern.type == CAPTURE && pattern.capture == Capture::SIMPLE
+
       Pattern.new(CAPTURE, pattern, capture: Capture::SIMPLE)
     end
 
@@ -598,6 +608,7 @@ class Pattern
       right.must_be nil
       data.must_be
     when CAPTURE
+
       left.must_be_a Pattern
       right.must_be nil
       capture.must_be
@@ -888,7 +899,7 @@ class Instruction
   OP_CODES = %i[
     char charset any jump choice call return commit back_commit
     partial_commit span op_end fail fail_twice unreachable
-    full_capture
+    open_capture close_capture full_capture
   ].each do |op|
     const_set op.upcase, op
   end
@@ -964,6 +975,13 @@ module Capture
 
     def close?
       @kind == CLOSE
+    end
+
+    def to_s
+      return @to_s if @to_s
+
+      str = "Breadcrumb size:#{size} sub_idx:#{subject_index} value:#{value.inspect} kind:#{kind}"
+      @to_s = str
     end
   end
 end
@@ -1082,33 +1100,74 @@ class ParsingMachine
         done!
       when i::UNREACHABLE
         raise "VM reached :unreachable instruction at line #{@i_ptr}"
+      when i::OPEN_CAPTURE
+        handle_capture(instr, size: 0, subject_index: @subject_index)
+      when i::CLOSE_CAPTURE
+        # TODO: copy LPEG's "if possible, turn capture into a full capture"
+        handle_capture(instr, size: 1, subject_index: @subject_index)
       when i::FULL_CAPTURE
-        handle_capture(instr)
+        # We have an all-in-one match, and the "capture length" tells us how far back in the subject the match started.
+        len = instr.aux[:capture_length].must_be(Integer)
+        handle_capture(instr, size: 1 + len, subject_index: @subject_index - len)
       else
         raise "Unhandled op code #{instr.op_code}"
       end
     end
   end
 
-  private def handle_capture(instr)
-    len = instr.aux[:capture_length].must_be
-    # any value(s) for the match that need to be populated now
-    kind = instr.aux[:kind].must_be
-
-    match_value = case kind
-                  when Capture::CONST, Capture::ARGUMENT
-                    instr.data
-                  when Capture::POSITION
-                    @subject_index
-                  else
-                    "Unhandled capture kind #{kind}"
-                  end
-
+  # LPEG does this (in lpvm.c):
+  # case ICloseCapture: {
+  #   const char *s1 = s;
+  #   assert(captop > 0);
+  #   /* if possible, turn capture into a full capture */
+  #   if (capture[captop - 1].siz == 0 &&
+  #       s1 - capture[captop - 1].s < UCHAR_MAX) {
+  #     capture[captop - 1].siz = s1 - capture[captop - 1].s + 1;
+  #     p++;
+  #     continue;
+  #   }
+  #   else {
+  #     capture[captop].siz = 1;  /* mark entry as closed */
+  #     capture[captop].s = s;
+  #     goto pushcapture;
+  #   }
+  # }
+  # case IOpenCapture:
+  #   capture[captop].siz = 0;  /* mark entry as open */
+  #   capture[captop].s = s;
+  #   goto pushcapture;
+  # case IFullCapture:
+  #   capture[captop].siz = getoff(p) + 1;  /* save capture size */
+  #   capture[captop].s = s - getoff(p);
+  #   /* goto pushcapture; */
+  # pushcapture: {
+  #   capture[captop].idx = p->i.key;
+  #   capture[captop].kind = getkind(p);
+  #   captop++;
+  #   capture = growcap(L, capture, &capsize, captop, 0, ptop);
+  #   p++;
+  #   continue;
+  # }
+  #
+  # In that code, captop points to the "next" or "new" capture info, so captop - 1 is the current top.
+  # Fields:
+  #  - s is the subject index/pos
+  #  - siz is 1 plus the "size" of the capture. A value of 0 indicates an OpenCapture (start of capture)
+  #    - but when we are expecting an OpenCapture and see one with a non-zero size it means we actually have a "full" capture, which
+  #      is a combined open/close. These have a "subject offset" (getoff(p)) that says how long the match is. We currently stick
+  #      this value, when appropriate, the :capture_length field of the intr.aux hash.
+  #  - idx is the "extra" data provided with the capture instruction, such as a const value represended as a pointer to Lua data.
+  #    - it is often nil/absent
+  #    - for us this comes from the #data field of the instruction
+  #  - kind is the sort of capture it is: const, arg, etc.
+  #
+  # The first two vary with the capture type and are passed in here. The other two come cleanly out of the Instruction.
+  private def handle_capture(instr, size:, subject_index:)
     add_capture(Capture::Breadcrumb.new(
-                  1 + len,
-                  @subject_index - len,
-                  match_value,
-                  instr.aux[:kind]
+                  size,
+                  subject_index,
+                  instr.data,
+                  instr.aux[:kind].must_be
                 ))
     @i_ptr += 1
   end
@@ -1261,8 +1320,12 @@ class ParsingMachine
     capture = @breadcrumbs.first.must_be_a Capture::Breadcrumb
 
     case capture.kind
-    when Capture::CONST, Capture::POSITION
+    when Capture::CONST
       @captures_to_return << capture.value
+      @breadcrumbs.shift # consume it
+      1
+    when Capture::POSITION
+      @captures_to_return << capture.subject_index
       @breadcrumbs.shift # consume it
       1
     when Capture::ARGUMENT
@@ -1274,7 +1337,10 @@ class ParsingMachine
       @breadcrumbs.shift # consume it
       1
     when Capture::SIMPLE
-      count = extract_nested_captures(add_extra: true).must_be.positive?
+      byebug if $do_it
+
+      count = extract_nested_captures(add_extra: true)
+      count.must_be.positive?
 
       # We need to make the whole match appear first in the list we just generated
       if count > 1
@@ -1304,7 +1370,7 @@ class ParsingMachine
   #
   # Code is closely based on the LPEG code.
   def extract_nested_captures(add_extra:)
-    open_capture = @breadcrumbs.shift.must_be a Capture::Breadcrumb
+    open_capture = @breadcrumbs.shift.must_be_a Capture::Breadcrumb
 
     if open_capture.full_capture?
       # This is presumably a nontrivial capture that was converted to a "full" capture in code optimization or at runtime.
@@ -1321,7 +1387,9 @@ class ParsingMachine
     # We have reached our matching close
     close_capture = @breadcrumbs.shift.must_be_a Capture::Breadcrumb
     if add_extra || count.zero?
-      match_range = (open_capture.subject_index)..(close_capture.subject_index)
+      # The close capture's subject index is actually the character _after_ the match ends, since that's where the associated
+      # matching attempt must have failed.
+      match_range = (open_capture.subject_index)...(close_capture.subject_index)
       @captures_to_return << @subject[match_range]
       count += 1
     end
