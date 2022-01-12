@@ -468,12 +468,12 @@ class Pattern
     when CAPTURE
       case capture
       when Capture::CONST, Capture::POSITION, Capture::ARGUMENT
-        prog << Instruction.new(i::FULL_CAPTURE, data: data, aux: { cap_len: 0, kind: capture })
+        prog << Instruction.new(i::FULL_CAPTURE, data: data, aux: { capture_length: 0, kind: capture })
         prog += child.program
       when Capture::SIMPLE
-        prog << Instruction.new(i::OPEN_CAPTURE, aux: { cap_len: 0, kind: capture})
+        prog << Instruction.new(i::OPEN_CAPTURE, aux: { capture_length: 0, kind: capture })
         prog += child.program
-        prog << Instruction.new(i::CLOSE_CAPTURE, aux: { cap_len: 0, kind: Capture::CLOSE})
+        prog << Instruction.new(i::CLOSE_CAPTURE, aux: { capture_length: 0, kind: Capture::CLOSE })
       else
         raise "Unhandled capture kind #{capture}"
       end
@@ -934,7 +934,7 @@ module Capture
 
   # Used inside the VM when recording Captures
   class Breadcrumb
-    attr_reader :size, :subject_pos, :value, :kind
+    attr_reader :size, :subject_index, :value, :kind
 
     # From LPEG:
     #
@@ -946,9 +946,9 @@ module Capture
     # } Capture;
     #
     # We use #value instead of #idx
-    def initialize(size, subject_pos, value, kind)
+    def initialize(size, subject_index, value, kind)
       @size = size
-      @subject_pos = subject_pos
+      @subject_index = subject_index
       @value = value
       @kind = kind
 
@@ -959,7 +959,7 @@ module Capture
     #
     # This feels janky, but for now I'm following the LPEG capture code as closely as I can
     def full_capture?
-      @size > 0
+      @size.positive?
     end
 
     def close?
@@ -972,18 +972,19 @@ end
 #
 # See lpvm.c in the LPEG code.
 class ParsingMachine
-  # subject is the string to match against
-
-  # Extra args may have been supplied in the initial #match call. These are consumed by Argument Captures.
+  # program: the program to run
+  # subject: the string to match against
+  # initial_pos: the position in subject to start the search at
+  # extra_args may have been supplied in the initial #match call. These are consumed by Argument Captures.
   def initialize(program, subject, initial_pos, extra_args)
     @program = program.clone.freeze
     @prog_len = @program_size
     @subject = subject.clone.freeze
 
-    @current_instruction = 0
-    @current_subject_position = initial_pos
+    @i_ptr = 0 # index in @program of the next instruction
+    @subject_index = initial_pos
     @stack = []
-    @vm_captures = []
+    @breadcrumbs = [] # the records of the captures we make during parsing
 
     @extra_args = extra_args.clone
   end
@@ -992,109 +993,105 @@ class ParsingMachine
     @success
   end
 
+  # TODO
+  #
+  # Instead of pushing clones of the breadcrumbs onto the stack and then restoring the entire data structure we could do what LPEG
+  # does and use a fixed array for the breadcrumbs and push/pop the top-of-stack index. This is safe because, during a successful
+  # match, breadcrumbs are never removed.
+  #
+  # LPEG does it that way - at least in part - because of C's manual memory management requirements, but it is efficient. This would
+  # save object clones during a run. We would just need to clean things up at the end of the run so we don't have junk entries at
+  # the end of the array when we analyse the breadcrumbs for capture returns.
   def run
+    i = Instruction # shorthand
     loop do
       return if done?
 
-      if @current_instruction == :fail
+      if @i_ptr == :fail
         handle_fail_ptr
         next
       end
 
-      raise "current instruction #{@current_instruction} is out of range" unless (0...@prog_len).include?(@current_instruction)
+      raise "current instruction pointer #{@i_ptr} is negative" if @i_ptr.negative?
 
-      instr = @program[@current_instruction].must_be_a(Instruction)
-      # op_code, arg1, _arg2 = @program[@current_instruction]
-
-      match_char_p = lambda do |success|
-        if success
-          @current_instruction += 1
-          @current_subject_position += 1
-        else
-          @current_instruction = :fail
-        end
-      end
-
-      # shorthand
-      i = Instruction
+      instr = @program[@i_ptr].must_be_a(Instruction)
 
       case instr.op_code
       when i::CHAR
         # arg1 is a single character
-        match_char_p.call(instr.data == @subject[@current_subject_position])
+        check_char(instr.data == @subject[@subject_index])
       when i::CHARSET
-        match_char_p.call(instr.data.include?(@subject[@current_subject_position]))
+        check_char(instr.data.include?(@subject[@subject_index]))
       when i::ANY
         # arg1 is the number of chars we are looking for
-        if @current_subject_position + instr.data <= @subject.size
-          @current_instruction += 1
-          @current_subject_position += instr.data
+        if @subject_index + instr.data <= @subject.size
+          @i_ptr += 1
+          @subject_index += instr.data
         else
-          @current_instruction = :fail
+          @i_ptr = :fail
         end
       when i::JUMP
-        @current_instruction += instr.offset
+        @i_ptr += instr.offset
       when i::CHOICE
         # We push the offset for the other side of the choice
         push(:state, instr.offset)
-        @current_instruction += 1
+        @i_ptr += 1
       when i::CALL
         # Call is like jump, but we push the return address onto the stack first
         push(:instruction, 1)
-        @current_instruction += instr.offset
+        @i_ptr += instr.offset
       when i::RETURN
-        @current_instruction = pop(:instruction)
+        @i_ptr = pop(:instruction).i_ptr
       when i::COMMIT
-        # we pop and discard the top of the stack (which must be a triple) and then do the jump given by arg1. Even though we are
-        # discarding it check that it was a full state as a sanity check.
+        # we pop and discard the top of the stack (which must be a full state) and then do the jump given by arg1. Even though we
+        # are discarding it check that it was a full state for sanity.
         _ = pop(:state)
-        @current_instruction += instr.offset
+        @i_ptr += instr.offset
       when i::PARTIAL_COMMIT
         # Sort of a combination of commit (which pops) and choice (which pushes), but we just tweak the top of the stack. See
         # Ierusalimschy, sec 4.3
         stack_top = peek(:state)
         raise "Empty stack for partial commit!" unless stack_top
 
-        stack_top[1] = @current_subject_position
-        stack_top[2] = @vm_captures.clone
-
-        @current_instruction += instr.offset
+        stack_top.subject_index = @subject_index
+        stack_top.breadcrumbs = @breadcrumbs.clone
+        @i_ptr += instr.offset
       when i::BACK_COMMIT
         # A combination of a fail and a commit. We backtrack, but then jump to the specified instruction rather than using the
         # backtrack label. It's used for the AND pattern. See Ierusalimschy, 4.4
-        _, subject_pos, captures = pop(:state)
-        @current_subject_position = subject_pos
-        @vm_captures = captures
-        @current_instruction += instr.offset
+        stack_top = pop(:state)
+        @subject_index = stack_top.subject_index
+        @breadcrumbs = stack_top.breadcrumbs
+        @i_ptr += instr.offset
       when i::SPAN
         # Special instruction for when we are repeating over a charset, which is common. We just consume as many maching characters
         # as there are. This never fails as we might just match zero
-        @current_subject_position += 1 while instr.data.include?(@subject[@current_subject_position])
+        @subject_index += 1 while instr.data.include?(@subject[@subject_index])
 
-        @current_instruction += 1
+        @i_ptr += 1
       when i::FAIL
         # We trigger the fail routine
-        @current_instruction = :fail
+        @i_ptr = :fail
       when i::FAIL_TWICE
         # An optimization for the not(pattern) implementation. We pop the top of the stack and discard it, and then enter the fail
         # routine again. For sanity's sake we'll check that the thing we are popping is a :state entry. See Ierusalimschy, 4.4
         _ = pop(:state)
-        @current_instruction = :fail
+        @i_ptr = :fail
       when i::OP_END
         @success = true
         done!
       when i::UNREACHABLE
-        raise "VM reached :unreachable instruction at line #{@current_instruction}"
+        raise "VM reached :unreachable instruction at line #{@i_ptr}"
       when i::FULL_CAPTURE
         handle_capture(instr)
       else
-        raise "Unsupported op code #{instr.op_code}"
+        raise "Unhandled op code #{instr.op_code}"
       end
     end
   end
 
   private def handle_capture(instr)
-    len = instr.aux[:cap_len].must_be
+    len = instr.aux[:capture_length].must_be
     # any value(s) for the match that need to be populated now
     kind = instr.aux[:kind].must_be
 
@@ -1102,18 +1099,18 @@ class ParsingMachine
                   when Capture::CONST, Capture::ARGUMENT
                     instr.data
                   when Capture::POSITION
-                    @current_subject_position
+                    @subject_index
                   else
                     "Unhandled capture kind #{kind}"
                   end
 
     add_capture(Capture::Breadcrumb.new(
                   1 + len,
-                  @current_subject_position - len,
+                  @subject_index - len,
                   match_value,
                   instr.aux[:kind]
                 ))
-    @current_instruction += 1
+    @i_ptr += 1
   end
 
   private def done!
@@ -1125,12 +1122,12 @@ class ParsingMachine
   end
 
   # React to a character match or failure
-  private def char_matched(success)
+  private def check_char(success)
     if success
-      @current_instruction += 1
-      @current_subject_position += 1
+      @i_ptr += 1
+      @subject_index += 1
     else
-      @current_instruction = :fail
+      @i_ptr = :fail
     end
   end
 
@@ -1143,13 +1140,12 @@ class ParsingMachine
     else
       top = pop
 
-      if top.is_a?(Numeric)
+      if top.type == :instruction
       # nothing more to do
       else
-        p, i, c = top
-        @current_instruction = p
-        @current_subject_position = i
-        @vm_captures = c
+        @i_ptr = top.i_ptr
+        @subject_index = top.subject_index
+        @breadcrumbs = top.breadcrumbs
       end
     end
   end
@@ -1159,52 +1155,54 @@ class ParsingMachine
 
   # We push either
   # - an instruction pointer, which may later be used to jump, etc, or
-  # - the current state with an offset, which is the [instr ptr + offset, subject_pos, capture list] triple. Let's tag them for
-  #   sanity's sake
+  # - the current state with an offset, which is the [instr ptr + offset, subject_index, capture list] triple.
   private def push(type, offset)
-    raise "must push something" unless offset
+    raise "Must push something onto stack" unless offset
+    raise "Bad stack frame type" unless %i[instruction state].include?(type)
 
-    case type
-    when :instruction
-      @stack.push([:instruction, @current_instruction + offset])
-    when :state
-      @stack.push([:state, [@current_instruction + offset, @current_subject_position, @vm_captures.clone]])
-    else
-      raise "Bad push type #{type}"
+    frame = OpenStruct.new(type: type, i_ptr: @i_ptr + offset)
+    if type == :state
+      frame.subject_index = @subject_index
+      frame.breadcrumbs = @breadcrumbs.clone
     end
+
+    @stack.push frame
   end
 
-  # Pop the top thing on the stack and return it (not including the tag). If expecting is non nil check that it equals the tag
+  # Pop and return the top stack frame. If expected_type is non nil check that the frame has that type
   #
   # Raise if stack is empty
-  private def pop(expecting = nil)
+  private def pop(expected_type = nil)
     raise "Nothing in stack to pop" if @stack.empty?
 
-    tag, val = @stack.pop
-
-    raise "Top of stack is of type #{tag}, not of expected type #{expecting}" if expecting && expecting != tag
-
-    val
+    frame = @stack.pop
+    check_frame(frame, expected_type)
+    frame
   end
 
   # Peek and return the top of the stack, or nil if the stack is empty. The returned value, if an array, can be modified, thus
   # affecting the stack
   #
   # If expecting is given make sure that the top of the stack is of the given type
-  private def peek(expecting = nil)
+  private def peek(expected_type = nil)
     return nil if @stack.empty?
 
-    tag, val = @stack.last
+    frame = @stack.last
+    check_frame(frame, expected_type)
+    frame
+  end
 
-    raise "Top of stack is of type #{tag}, not of expected type #{expecting}" if expecting && expecting != tag
+  private def check_frame(frame, expected_type)
+    frame.must_be
+    return unless expected_type
 
-    val
+    raise "Top of stack is of type #{frame.type}, not of expected type #{expected_type}" unless frame.type == expected_type
   end
 
   private def add_capture(capture)
     capture.must_be_a Capture::Breadcrumb
 
-    @vm_captures.push(capture)
+    @breadcrumbs.push(capture)
   end
 
   ########################################
@@ -1245,14 +1243,14 @@ class ParsingMachine
   def captures
     raise "Cannot call #captures unless machine ran sucessfully" unless done? && success?
 
-    return @current_subject_position if @vm_captures.empty?
+    return @subject_index if @breadcrumbs.empty?
 
-    # set it aside in case we need it later. The capture methods will shift @vm_captures as they go
-    @final_captures = @vm_captures.clone
+    # set it aside in case we need it later. The capture methods will shift @breadcrumbs as they go
+    @final_captures = @breadcrumbs.clone
 
     @captures_to_return = [] # accumulate them here
 
-    extract_next_capture until @vm_captures.empty?
+    extract_next_capture until @breadcrumbs.empty?
 
     @captures_to_return = @captures_to_return.first if @captures_to_return.size == 1
     @captures_to_return
@@ -1260,12 +1258,12 @@ class ParsingMachine
 
   # Extract the next capture, returning the number of values obtained.
   private def extract_next_capture
-    capture = @vm_captures.first.must_be_a Capture::Breadcrumb
+    capture = @breadcrumbs.first.must_be_a Capture::Breadcrumb
 
     case capture.kind
     when Capture::CONST, Capture::POSITION
       @captures_to_return << capture.value
-      @vm_captures.shift # consume it
+      @breadcrumbs.shift # consume it
       1
     when Capture::ARGUMENT
       index = capture.value
@@ -1273,7 +1271,7 @@ class ParsingMachine
 
       # with an Argument Capture the extra arguments are indexed from 1
       @captures_to_return << @extra_args[index - 1]
-      @vm_captures.shift # consume it
+      @breadcrumbs.shift # consume it
       1
     when Capture::SIMPLE
       count = extract_nested_captures(add_extra: true).must_be.positive?
@@ -1282,7 +1280,7 @@ class ParsingMachine
       if count > 1
         back_shift = count - 1
         whole_match = @captures_to_return.pop
-        @captures_to_return[(-back_shift)...(-back_shift)] = whole_match
+        @captures_to_return[-back_shift...-back_shift] = whole_match
       end
       count
     else
@@ -1306,26 +1304,24 @@ class ParsingMachine
   #
   # Code is closely based on the LPEG code.
   def extract_nested_captures(add_extra:)
-    open_capture = @vm_captures.shift.must_be a Capture::Breadcrumb
+    open_capture = @breadcrumbs.shift.must_be a Capture::Breadcrumb
 
     if open_capture.full_capture?
       # This is presumably a nontrivial capture that was converted to a "full" capture in code optimization or at runtime.
       # We don't do such optimziations yet but might.
-      cpos = capture.subject_pos
-      match_range = (cpos - capture.size + 1)..cpos
+      cpos = capture.subject_index
+      match_range = (cpos - (capture.size - 1))..cpos
       @captures_to_return << @subject[match_range]
       return 1
     end
 
     count = 0
-    while !@vm_captures.first.close?
-      count += extract_next_capture
-    end
+    count += extract_next_capture until @breadcrumbs.first.close? # Nested captures
 
     # We have reached our matching close
-    close_capture = @vm_captures.shift.must_be_a Capture::Breadcrumb
-    if add_extra || count == 0
-      match_range = (open_capture.subject_pos)..(close_capture.subject_pos)
+    close_capture = @breadcrumbs.shift.must_be_a Capture::Breadcrumb
+    if add_extra || count.zero?
+      match_range = (open_capture.subject_index)..(close_capture.subject_index)
       @captures_to_return << @subject[match_range]
       count += 1
     end
