@@ -110,10 +110,17 @@ class Pattern
     # LPEG: Creates a constant capture. This pattern matches the empty string and produces all given values as its captured values.
     #
     # No value at all - Cc() - adds nothing to the result, which is different from a value of nil.
+    #
+    # We capture several values with individual captures.
     def Cc(*values)
-      values = values.first if values.size == 1
+      pattern = P(true)
+      until values.empty?
+        val = values.pop
 
-      Pattern.new(CAPTURE, P(true), data: values, capture: Capture::CONST)
+        pattern = Pattern.new(CAPTURE, pattern, data: val, capture: Capture::CONST)
+      end
+
+      pattern
     end
 
     # LPEG: Creates a position capture. It matches the empty string and captures the position in the subject where the match
@@ -122,8 +129,17 @@ class Pattern
       Pattern.new(CAPTURE, P(true), capture: Capture::POSITION)
     end
 
-    def match(thing, string)
-      P(thing).match(string)
+    # Capture the n-th extra argument provided to #match. The first extra argument is n=1, etc.
+    #
+    # We accept missing argument to match some LPEG test cases. An error is raised
+    def Carg(n = nil)
+      raise "Invalid argument for Carg: #{n || 'nil'}" unless n && n.is_a?(Integer) && n.positive?
+
+      Pattern.new(CAPTURE, P(true), data: n, capture: Capture::ARGUMENT)
+    end
+
+    def match(thing, string, init = 0, *extra_args)
+      P(thing).match(string, init, *extra_args)
     end
 
     private def charset_union(cs1, cs2)
@@ -144,11 +160,15 @@ class Pattern
   end
 
   # Return the index just after the matching prefix of str or null if there is no match
-  def match(str)
-    machine = ParsingMachine.new(program + [Instruction.new(Instruction::OP_END)], str)
+  #
+  # str: the string the match against
+  # init: the string index to start at, defaulting to 0
+  # extra_args: used by Argument Captures
+  def match(str, init = 0, *extra_args)
+    machine = ParsingMachine.new(program + [Instruction.new(Instruction::OP_END)], str, init)
     machine.run
 
-    return machine.captures if machine.success?
+    return machine.captures(extra_args) if machine.success?
 
     # otherwise return nil
   end
@@ -438,18 +458,16 @@ class Pattern
       prog << Instruction.new(i::BACK_COMMIT, offset: 2)
       prog << Instruction.new(i::FAIL)
     when CAPTURE
-      case capture
-      when Capture::CONST
-        prog << Instruction.new(i::FULL_CAPTURE, data: data, aux: {cap_len: 0, kind: Capture::CONST})
-
-        # Sanity check, and then render the subprogram anyway
-        child.type.must_be NTRUE
-        prog += child.program
-      when Capture::POSITION
-        prog << Instruction.new(i::FULL_CAPTURE, aux: {cap_len: 0, kind: Capture::POSITION})
-      else
-        raise "Unknown capture kind #{p.capture}"
-      end
+      prog << Instruction.new(i::FULL_CAPTURE, data: data, aux: {cap_len: 0, kind: capture})
+      prog += child.program
+      # case capture
+      # when Capture::CONST
+      # when Capture::POSITION, Capture::ARGUMENT
+      #   prog << Instruction.new(i::FULL_CAPTURE, data: data, aux: {cap_len: 0, kind: capture})
+      #   prog += child.program
+      # else
+      #   raise "Unknown capture kind #{p.capture}"
+      # end
     when GRAMMAR
       start_line_of_nonterminal = {}
       full_rule_code = []
@@ -923,7 +941,7 @@ class Instruction
 end
 
 module Capture
-  KINDS = %i[const position].each do |kind|
+  KINDS = %i[const position argument].each do |kind|
     const_set kind.upcase, kind
   end
 
@@ -956,15 +974,15 @@ class ParsingMachine
 
   attr_reader :final_index
 
-  def initialize(program, subject)
+  def initialize(program, subject, initial_pos)
     @program = program.clone.freeze
     @prog_len = @program_size
     @subject = subject.clone.freeze
 
     @current_instruction = 0
-    @current_subject_position = 0
+    @current_subject_position = initial_pos
     @stack = []
-    @capture_stack = []
+    @capture_list = []
   end
 
   def success?
@@ -982,34 +1000,52 @@ class ParsingMachine
   # a way that seems natural to me and that respects the LPEG documentation and tests and b) puzzle through the LPEG code when
   # necessary.
   #
+  # The post-run capture retrieval is actually straightforward, at least at the top level: see getcaptures and pushcapture in
+  # lpcap.c. But the code in the VM for ICloseRuntime is terrifying.
+  #
+  # Basic model:
+  #
+  # - We push Capture objects onto the stack as we run the VM based on the instructions generated from the patterns. We never pop
+  #   anything from the stack: the Captures are breadcrumbs that let us work out after the fact what happend. Things do get removed
+  #   from the Capture stack but only at backtrack points because a match has failed.
+  # - The End instruction tacks on an unbalanced CloseCapture. This appears to be simply an end-marker like the null string
+  #   terminator.
+  # - After the VM runs we read through the Captures from the _oldest_ first until we reach the end-marker. So isn't not a stack,
+  #   but a queue.
+  #
   # Some properties derived from the LPEG docs and tests.
   # 1. an array capture gets flattened into the result.
   #    - So if we have two constant captures of 1 and [2,3,4] in sequence, say, the result will be [1, 2, 3, 4], and not
   #      [1, [2, 3, 4]]. Multiple match values are equivalent to sequential single match values.
-  def captures
+  #    - LPEG actually implements a multivalue constant capture as several single capture. This is cleaner overall and I will do the
+  #      same.
+  #
+  # - extra_args is the list of extra arguments provided to #match. These are used for argument captures
+  def captures(extra_args)
     raise "Cannot call #captures unless machine ran sucessfully" unless done? && success?
 
-    return final_index if @capture_stack.empty?
+    return final_index if @capture_list.empty?
 
     result = []
 
-    until @capture_stack.empty?
-      capture = @capture_stack.pop.must_be_a Capture::VM
+    until @capture_list.empty?
+      capture = @capture_list.shift.must_be_a Capture::VM
 
       case capture.kind
       when Capture::CONST, Capture::POSITION
-        result.push capture.value
+        result << capture.value
+      when Capture::ARGUMENT
+        index = capture.value
+        raise "Reference to absent extra argument ##{index}" if index > extra_args.size
+
+        # with an Argument Capture the extra arguments are indexed from 1
+        result << extra_args[index - 1]
       else
         raise "Unhandled capture kind #{capture.kind}"
       end
     end
 
-    # By popping off the stack we have accumulated the captures in the reverse order from their finding. So for now just reverse the
-    # order. We also flatten to squeeze out any multiple-value captures.
-    result = result.reverse.flatten
-
-    return result.first if result.size == 1
-
+    result = result.first if result.size == 1
     result
   end
 
@@ -1077,7 +1113,7 @@ class ParsingMachine
         raise "Empty stack for partial commit!" unless stack_top
 
         stack_top[1] = @current_subject_position
-        stack_top[2] = @capture_stack.clone
+        stack_top[2] = @capture_list.clone
 
         @current_instruction += instr.offset
       when i::BACK_COMMIT
@@ -1085,7 +1121,7 @@ class ParsingMachine
         # backtrack label. It's used for the AND pattern. See Ierusalimschy, 4.4
         _, subject_pos, captures = pop(:state)
         @current_subject_position = subject_pos
-        @capture_stack = captures
+        @capture_list = captures
         @current_instruction += instr.offset
       when i::SPAN
         # Special instruction for when i:wE are repeating over a charset, which is common. We just consume as many maching characters
@@ -1113,13 +1149,15 @@ class ParsingMachine
         kind = instr.aux[:kind].must_be
 
         match_value = case kind
-                      when Capture::CONST
+                      when Capture::CONST, Capture::ARGUMENT
                         instr.data
                       when Capture::POSITION
                         @current_subject_position
+                      else
+                        "Unhandled capture kind #{kind}"
                       end
 
-        push_capture(Capture::VM.new(
+        add_capture(Capture::VM.new(
                        1 + len,
                        @current_subject_position - len,
                        match_value,
@@ -1155,7 +1193,7 @@ class ParsingMachine
         p, i, c = top
         @current_instruction = p
         @current_subject_position = i
-        @capture_stack = c
+        @capture_list = c
       end
     end
   end
@@ -1174,7 +1212,7 @@ class ParsingMachine
     when :instruction
       @stack.push([:instruction, @current_instruction + offset])
     when :state
-      @stack.push([:state, [@current_instruction + offset, @current_subject_position, @capture_stack.clone]])
+      @stack.push([:state, [@current_instruction + offset, @current_subject_position, @capture_list.clone]])
     else
       raise "Bad push type #{type}"
     end
@@ -1207,9 +1245,9 @@ class ParsingMachine
     val
   end
 
-  private def push_capture(capture)
+  private def add_capture(capture)
     capture.must_be_a Capture::VM
 
-    @capture_stack.push(capture)
+    @capture_list.push(capture)
   end
 end

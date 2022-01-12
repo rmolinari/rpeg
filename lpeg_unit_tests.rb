@@ -184,6 +184,28 @@ class TestsFromLpegCode < Test::Unit::TestCase
     assert_equal fn, m.Cc(fn).match("")
   end
 
+  def test_argument_capture
+    # test.lua l.677
+    # -- tests for argument captures
+    assert_match_raises_error("Invalid argument", -> {m.Carg}, 0)
+    assert_match_raises_error("Invalid argument", -> {m.Carg}, -1)
+    assert_match_raises_error("Invalid argument", -> {m.Carg}, 2^18)
+    assert_match_raises_error("absent extra argument #1", m.Carg(1), 'a', 0)
+    assert_equal a_lambda, m.match(m.Carg(1), 'a', 1, a_lambda)
+    assert_equal [10, 20], m.match(m.Carg(1) * m.Carg(2), '', 0, 10, 20)
+
+    # assert(m.match(m.Cmt(m.Cg(m.Carg(3), "a") *
+    #                      m.Cmt(m.Cb("a"), function (s,i,x)
+    #                                         assert(s == "a" and i == 1);
+    #                                         return i, x+1
+    #                                       end) *
+    #                      m.Carg(2), function (s,i,a,b,c)
+    #                                   assert(s == "a" and i == 1 and c == nil);
+    # 				  return i, 2*a + 3*b
+    #                                 end) * "a",
+    #                "a", 1, false, 100, 1000) == 2*1001 + 3*100)
+  end
+
   ## %%%
   ## - up to l.151 in test.lua
 
@@ -192,8 +214,18 @@ class TestsFromLpegCode < Test::Unit::TestCase
     Pattern
   end
 
+  # If pattern is a lambda call it; otherwise just use it
+  def assert_match_raises_error(message, pattern, *args)
+    message = /#{message}/ if message.is_a?(String)
+    assert_raise_message(message) { m.P(pattern.is_a?(Proc) ? pattern.call : pattern).match(*args) }
+  end
+
   def isnullable(patt)
     m.P(patt).nullable?
+  end
+
+  def a_lambda
+    @a_lambda ||= lambda { |x| x }
   end
 
   def digit; m.S("0123456789"); end
