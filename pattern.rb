@@ -945,7 +945,9 @@ module Capture
 
   # Used inside the VM when recording Captures
   class Breadcrumb
-    attr_reader :size, :subject_index, :value, :kind
+    attr_reader :subject_index, :value, :kind
+    # We occasionally update this as when converting an open capture into a full capture
+    attr_accessor :size
 
     # From LPEG:
     #
@@ -956,7 +958,10 @@ module Capture
     #   byte siz;  /* size of full capture + 1 (0 = not a full capture) */
     # } Capture;
     #
-    # We use #value instead of #idx
+    # We use names
+    # - size instead of siz
+    # - subject_index instead of s
+    # - value instead of idx
     def initialize(size, subject_index, value, kind)
       @size = size
       @subject_index = subject_index
@@ -1084,6 +1089,7 @@ class ParsingMachine
       when i::SPAN
         # Special instruction for when we are repeating over a charset, which is common. We just consume as many maching characters
         # as there are. This never fails as we might just match zero
+
         @subject_index += 1 while instr.data.include?(@subject[@subject_index])
 
         @i_ptr += 1
@@ -1103,8 +1109,14 @@ class ParsingMachine
       when i::OPEN_CAPTURE
         handle_capture(instr, size: 0, subject_index: @subject_index)
       when i::CLOSE_CAPTURE
-        # TODO: copy LPEG's "if possible, turn capture into a full capture"
-        handle_capture(instr, size: 1, subject_index: @subject_index)
+        # As in LPEG: "if possible, turn capture into a full capture"
+        lc = last_capture.must_be # still on the breadcrumb list
+        if lc.size.zero? && (@subject_index - lc.subject_index) < 255 # should we care about an upper bound here?
+          lc.size = @subject_index - lc.subject_index + 1
+          @i_ptr += 1
+        else
+          handle_capture(instr, size: 1, subject_index: @subject_index)
+        end
       when i::FULL_CAPTURE
         # We have an all-in-one match, and the "capture length" tells us how far back in the subject the match started.
         len = instr.aux[:capture_length].must_be(Integer)
@@ -1264,6 +1276,11 @@ class ParsingMachine
     @breadcrumbs.push(capture)
   end
 
+  # The most recent capture that we added, or nil if there isn't one
+  private def last_capture
+    @breadcrumbs.last
+  end
+
   ########################################
   # Capture extraction code
 
@@ -1337,8 +1354,6 @@ class ParsingMachine
       @breadcrumbs.shift # consume it
       1
     when Capture::SIMPLE
-      byebug if $do_it
-
       count = extract_nested_captures(add_extra: true)
       count.must_be.positive?
 
@@ -1375,8 +1390,9 @@ class ParsingMachine
     if open_capture.full_capture?
       # This is presumably a nontrivial capture that was converted to a "full" capture in code optimization or at runtime.
       # We don't do such optimziations yet but might.
-      cpos = capture.subject_index
-      match_range = (cpos - (capture.size - 1))..cpos
+      cpos = open_capture.subject_index
+      match_len = open_capture.size - 1
+      match_range = cpos...(cpos + match_len)
       @captures_to_return << @subject[match_range]
       return 1
     end
