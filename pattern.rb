@@ -933,7 +933,7 @@ module Capture
   end
 
   # Used inside the VM when recording Captures
-  class VM
+  class Breadcrumb
     attr_reader :size, :subject_pos, :value, :kind
 
     # From LPEG:
@@ -969,10 +969,10 @@ module Capture
 end
 
 # The VM used to run the programs generated from the patterns.
+#
+# See lpvm.c in the LPEG code.
 class ParsingMachine
   # subject is the string to match against
-
-  attr_reader :final_index
 
   # Extra args may have been supplied in the initial #match call. These are consumed by Argument Captures.
   def initialize(program, subject, initial_pos, extra_args)
@@ -983,7 +983,7 @@ class ParsingMachine
     @current_instruction = 0
     @current_subject_position = initial_pos
     @stack = []
-    @capture_list = []
+    @vm_captures = []
 
     @extra_args = extra_args.clone
   end
@@ -1056,7 +1056,7 @@ class ParsingMachine
         raise "Empty stack for partial commit!" unless stack_top
 
         stack_top[1] = @current_subject_position
-        stack_top[2] = @capture_list.clone
+        stack_top[2] = @vm_captures.clone
 
         @current_instruction += instr.offset
       when i::BACK_COMMIT
@@ -1064,7 +1064,7 @@ class ParsingMachine
         # backtrack label. It's used for the AND pattern. See Ierusalimschy, 4.4
         _, subject_pos, captures = pop(:state)
         @current_subject_position = subject_pos
-        @capture_list = captures
+        @vm_captures = captures
         @current_instruction += instr.offset
       when i::SPAN
         # Special instruction for when we are repeating over a charset, which is common. We just consume as many maching characters
@@ -1082,7 +1082,6 @@ class ParsingMachine
         @current_instruction = :fail
       when i::OP_END
         @success = true
-        @final_index = @current_subject_position
         done!
       when i::UNREACHABLE
         raise "VM reached :unreachable instruction at line #{@current_instruction}"
@@ -1108,7 +1107,7 @@ class ParsingMachine
                     "Unhandled capture kind #{kind}"
                   end
 
-    add_capture(Capture::VM.new(
+    add_capture(Capture::Breadcrumb.new(
                   1 + len,
                   @current_subject_position - len,
                   match_value,
@@ -1123,6 +1122,16 @@ class ParsingMachine
 
   private def done?
     @done
+  end
+
+  # React to a character match or failure
+  private def char_matched(success)
+    if success
+      @current_instruction += 1
+      @current_subject_position += 1
+    else
+      @current_instruction = :fail
+    end
   end
 
   # Not for the FAIL op_code, but for when the instruction pointer is :fail
@@ -1140,7 +1149,7 @@ class ParsingMachine
         p, i, c = top
         @current_instruction = p
         @current_subject_position = i
-        @capture_list = c
+        @vm_captures = c
       end
     end
   end
@@ -1159,7 +1168,7 @@ class ParsingMachine
     when :instruction
       @stack.push([:instruction, @current_instruction + offset])
     when :state
-      @stack.push([:state, [@current_instruction + offset, @current_subject_position, @capture_list.clone]])
+      @stack.push([:state, [@current_instruction + offset, @current_subject_position, @vm_captures.clone]])
     else
       raise "Bad push type #{type}"
     end
@@ -1193,9 +1202,9 @@ class ParsingMachine
   end
 
   private def add_capture(capture)
-    capture.must_be_a Capture::VM
+    capture.must_be_a Capture::Breadcrumb
 
-    @capture_list.push(capture)
+    @vm_captures.push(capture)
   end
 
   ########################################
@@ -1236,35 +1245,35 @@ class ParsingMachine
   def captures
     raise "Cannot call #captures unless machine ran sucessfully" unless done? && success?
 
-    return final_index if @capture_list.empty?
+    return @current_subject_position if @vm_captures.empty?
 
-    # set it aside in case we need it later. The capture methods will shift @capture_list as they go
-    @final_captures = @capture_list.clone
+    # set it aside in case we need it later. The capture methods will shift @vm_captures as they go
+    @final_captures = @vm_captures.clone
 
-    @captures = [] # accumulate them here
+    @captures_to_return = [] # accumulate them here
 
-    extract_next_capture until @capture_list.empty?
+    extract_next_capture until @vm_captures.empty?
 
-    @captures = @captures.first if @captures.size == 1
-    @captures
+    @captures_to_return = @captures_to_return.first if @captures_to_return.size == 1
+    @captures_to_return
   end
 
   # Extract the next capture, returning the number of values obtained.
   private def extract_next_capture
-    capture = @capture_list.first.must_be_a Capture::VM
+    capture = @vm_captures.first.must_be_a Capture::Breadcrumb
 
     case capture.kind
     when Capture::CONST, Capture::POSITION
-      @captures << capture.value
-      @capture_list.shift # consume it
+      @captures_to_return << capture.value
+      @vm_captures.shift # consume it
       1
     when Capture::ARGUMENT
       index = capture.value
       raise "Reference to absent extra argument ##{index}" if index > @extra_args.size
 
       # with an Argument Capture the extra arguments are indexed from 1
-      @captures << @extra_args[index - 1]
-      @capture_list.shift # consume it
+      @captures_to_return << @extra_args[index - 1]
+      @vm_captures.shift # consume it
       1
     when Capture::SIMPLE
       count = extract_nested_captures(add_extra: true).must_be.positive?
@@ -1272,8 +1281,8 @@ class ParsingMachine
       # We need to make the whole match appear first in the list we just generated
       if count > 1
         back_shift = count - 1
-        whole_match = @captures.pop
-        @captures[(-back_shift)...(-back_shift)] = whole_match
+        whole_match = @captures_to_return.pop
+        @captures_to_return[(-back_shift)...(-back_shift)] = whole_match
       end
       count
     else
@@ -1293,31 +1302,31 @@ class ParsingMachine
   #
   # The "current capture" is the first one in the given list.
   #
-  # We append what we find to @captures and return their number.
+  # We append what we find to @captures_to_return and return their number.
   #
   # Code is closely based on the LPEG code.
   def extract_nested_captures(add_extra:)
-    open_capture = @capture_list.shift.must_be a Capture::VM
+    open_capture = @vm_captures.shift.must_be a Capture::Breadcrumb
 
     if open_capture.full_capture?
       # This is presumably a nontrivial capture that was converted to a "full" capture in code optimization or at runtime.
       # We don't do such optimziations yet but might.
       cpos = capture.subject_pos
       match_range = (cpos - capture.size + 1)..cpos
-      @captures << @subject[match_range]
+      @captures_to_return << @subject[match_range]
       return 1
     end
 
     count = 0
-    while !@capture_list.first.close?
+    while !@vm_captures.first.close?
       count += extract_next_capture
     end
 
     # We have reached our matching close
-    close_capture = @capture_list.shift.must_be_a Capture::VM
+    close_capture = @vm_captures.shift.must_be_a Capture::Breadcrumb
     if add_extra || count == 0
       match_range = (open_capture.subject_pos)..(close_capture.subject_pos)
-      @captures << @subject[match_range]
+      @captures_to_return << @subject[match_range]
       count += 1
     end
 
