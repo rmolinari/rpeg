@@ -138,6 +138,42 @@ class TestsFromLpegCode < Test::Unit::TestCase
     assert_nil m.match({ x: 'a' * -m.V(0) }, "aaaa")
   end
 
+  def test_const_capture
+    # test.lua l.170
+    # -- bug in LPeg 0.12  (nil value does not create a 'ktable')
+    assert_equal nil, m.match(m.Cc(nil), "")
+
+    # test.lua l.184
+    assert_equal [1, 2, 3, 4], m.match(m.Cc() * m.Cc() * m.Cc(1) * m.Cc(2,3,4) * m.Cc() * 'a', 'aaa')
+
+    # test.lua l.240
+    assert_equal 1, m.match(m.Cc(0) * m.P(10) + m.Cc(1) * "xuxu", "xuxu")
+    assert_equal 0, m.match(m.Cc(0) * m.P(10) + m.Cc(1) * "xuxu", "xuxuxuxuxu")
+
+    # test.lua l.559
+    p1 = -m.P('a') * m.Cc(1) + -m.P('b') * m.Cc(2) + -m.P('c') * m.Cc(3)
+    assert_equal 2, p1.match('a')
+    assert_equal 1, p1.match('')
+    assert_equal 1, p1.match('b')
+
+    p = -m.P('a') * m.Cc(10) + +m.P('a') * m.Cc(20)
+    assert_equal 20, p.match('a')
+    assert_equal 10, p.match('')
+    assert_equal 10, p.match('b')
+
+    # test.lau l.788
+    # -- bug in 0.12.2: ktable with only nil could be eliminated when joining
+    # -- with a pattern without ktable
+    #
+    # We don't use ktable things in RPEG but may as well do the test
+    assert_nil (m.P("aaa") * m.Cc(nil)).match("aaa")
+
+    # test.lua l.838
+    # This looks like a test that the value in a constant match can be a method
+    fn = lambda { |x| x }
+    assert_equal fn, m.Cc(fn).match("")
+  end
+
   ## %%%
   ## - up to l.151 in test.lua
 

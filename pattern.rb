@@ -1,7 +1,6 @@
 # See the README file for a little context. And also:
 #
 #   http://www.inf.puc-rio.br/~roberto/lpeg/#func
-#
 
 require 'set'
 require 'must_be'
@@ -20,11 +19,14 @@ require 'ostruct'
 #     - "n or more occurrences of patt" when n is non-negative
 #     - "fewer than -n occurrences of patt" when n is negative
 class Pattern
-  NODE_TYPES = %i[charset string any seq ordered_choice repeated not and literal grammar open_call rule call].each do |op|
+  NODE_TYPES = %i[
+                   charset string any seq ordered_choice repeated not and
+                   ntrue nfalse grammar open_call rule call capture
+                 ].each do |op|
     const_set op.upcase, op
   end
 
-  attr_reader :type, :left, :right, :data
+  attr_reader :type, :left, :right, :data, :capture
 
   class << self
     # Match any character in string (regarded as a set of characters), range, or Set
@@ -65,8 +67,10 @@ class Pattern
           # "Does not match n characters"
           -new(ANY, data: -arg)
         end
-      when FalseClass, TrueClass
-        new(LITERAL, data: arg)
+      when FalseClass
+        new(NFALSE)
+      when TrueClass
+        new(NTRUE)
       when Hash
         new(GRAMMAR, data: arg)
       else
@@ -103,6 +107,15 @@ class Pattern
       Pattern.new(OPEN_CALL, data: ref)
     end
 
+    # LPEG: Creates a constant capture. This pattern matches the empty string and produces all given values as its captured values.
+    #
+    # No value at all - Cc() - adds nothing to the result, which is different from a value of nil.
+    def Cc(*values)
+      values = values.first if values.size == 1
+
+      Pattern.new(CAPTURE, P(true), data: values, capture: Capture::CONST)
+    end
+
     def match(thing, string)
       P(thing).match(string)
     end
@@ -129,7 +142,7 @@ class Pattern
     machine = ParsingMachine.new(program + [Instruction.new(Instruction::OP_END)], str)
     machine.run
 
-    return machine.final_index if machine.success?
+    return machine.captures if machine.success?
 
     # otherwise return nil
   end
@@ -156,9 +169,9 @@ class Pattern
     other = fix_type(other)
 
     # true is the identity for *
-    if other.type == LITERAL && other.data == true
+    if other.type == NTRUE
       return self
-    elsif type == LITERAL && data == true
+    elsif type == NTRUE
       return other
     end
 
@@ -175,7 +188,7 @@ class Pattern
     elsif type == ORDERED_CHOICE
       # rejigger to make this operation right-associative which makes for more efficient compiled code. See Ierusalimschy 4.2
       left + (right + other)
-    elsif other.type == LITERAL && other.data == false
+    elsif other.type == NFALSE
       # false is the right-identity for +
       self
     else
@@ -288,18 +301,23 @@ class Pattern
       result << "#{type_s}: #{data.join}"
     when STRING, ANY
       result << "String: #{data}"
-    when LITERAL
-      result << "Literal: #{data.inspect}"
+    when NTRUE
+      result << "TRUE"
+    when NFALSE
+      reasult << "FALSE"
     when OPEN_CALL
       result << "OpenCall: #{data}"
     when CALL
-      result << "Call: #{extra}"
+      result << "Call: #{data}"
     when SEQ, ORDERED_CHOICE
       result << (type == SEQ ? "Seq:" : "Ordered Choice:")
       do_sub_pattern.call(left)
       do_sub_pattern.call(right)
     when REPEATED, NOT, AND
       result << type_s
+      do_sub_pattern.call(child)
+    when CAPTURE
+      result << "#{capture} #{data.inspect}"
       do_sub_pattern.call(child)
     when GRAMMAR
       result << "Grammar:"
@@ -336,9 +354,9 @@ class Pattern
 
   def num_children
     case type
-    when CHARSET, STRING, ANY, LITERAL, OPEN_CALL
+    when CHARSET, STRING, ANY, NTRUE, NFALSE, OPEN_CALL
       0
-    when REPEATED, AND, NOT, CALL, RULE
+    when REPEATED, AND, NOT, CALL, RULE, CAPTURE
       1
     when SEQ, ORDERED_CHOICE
       2
@@ -370,8 +388,9 @@ class Pattern
 
       # Just concatenate the code
       prog = left.program + right.program
-    when LITERAL
-      # if data = true then we always succeed, which means we don't have to do anything at all
+    when NTRUE
+      # we always succeed, which means we don't have to do anything at all
+    when NFALSE
       prog << Instruction.new(i::FAIL) unless data
     when OPEN_CALL
       # we resolved these to CALL when the grammar node was created. So if we see one now it is because it was not contained in a
@@ -412,6 +431,17 @@ class Pattern
       prog += p
       prog << Instruction.new(i::BACK_COMMIT, offset: 2)
       prog << Instruction.new(i::FAIL)
+    when CAPTURE
+      case capture
+      when Capture::CONST
+        prog << Instruction.new(i::FULL_CAPTURE, data: data, aux: {cap_len: 0, kind: Capture::CONST})
+
+        # Sanity check, and then render the subprogram anyway
+        child.type.must_be NTRUE
+        prog += child.program
+      else
+        raise "Unknown capture kind #{p.capture}"
+      end
     when GRAMMAR
       start_line_of_nonterminal = {}
       full_rule_code = []
@@ -460,7 +490,11 @@ class Pattern
   ########################################
   # Misc
 
-  def initialize(type, left = nil, right = nil, data: nil)
+  # Left and right are subtrees/patterns.
+  # data is other relevant data
+  # capture is used for Capture patterns
+  #
+  def initialize(type, left = nil, right = nil, data: nil, capture: nil)
     raise "Bad node type #{type}" unless NODE_TYPES.include?(type)
 
     @type = type
@@ -469,6 +503,8 @@ class Pattern
 
     # When we have information that isn't a pattern
     @data = data
+
+    @capture = capture
 
     sanity_check
 
@@ -498,15 +534,17 @@ class Pattern
   end
 
   private def sanity_check
+    capture.must_be nil unless type == CAPTURE
+
     case type
     when CHARSET
       right.must_be nil
       left.must_be nil
       data.must_be_a(Set, Range)
-    when LITERAL
+    when NTRUE, NFALSE
       right.must_be nil
       left.must_be nil
-      data.must_be_in(true, false)
+      data.must_be nil
     when GRAMMAR
       right.must_be nil
       left.must_be nil
@@ -524,6 +562,10 @@ class Pattern
       left.must_be_a Pattern
       right.must_be nil
       data.must_be
+    when CAPTURE
+      left.must_be_a Pattern
+      right.must_be nil
+      capture.must_be
     end
   end
 
@@ -600,9 +642,9 @@ class Pattern
       yield node
 
       case node.type
-      when CHARSET, STRING, ANY, LITERAL, CALL, OPEN_CALL
+      when CHARSET, STRING, ANY, NTRUE, NFALSE, CALL, OPEN_CALL
       # nothing more to do
-      when REPEATED, NOT, AND, RULE
+      when REPEATED, NOT, AND, RULE, CAPTURE
         to_do << node.child
       when ORDERED_CHOICE, SEQ
         to_do << node.left
@@ -663,9 +705,10 @@ class Pattern
         when STRING, CHARSET, ANY, OPEN_CALL
           # Not nullable; for open_call this is a blind assumption
           return false
-        when LITERAL
-          # false is not nullable, true is nofail
-          return pattern.data
+        when NTRUE
+          return true
+        when NFALSE
+          return false
         when REPEATED
           return true # we never fail, as we can match zero occurrences
         when NOT
@@ -689,11 +732,8 @@ class Pattern
           first_rule = pattern.child.first
           first_rule.type.must_be RULE
           pattern = first_rule.child.must_be
-        when CALL
-          # The call's rule is in child
-          pattern = pattern.child.must_be
-        when RULE
-          # Rule's pattern is in child
+        when CALL, RULE, CAPTURE
+          # The call's rule, rule's pattern, and capture's pattern are in child
           pattern = pattern.child.must_be
         else
           raise "Bad pattern type #{pattern.type}"
@@ -733,9 +773,9 @@ class Pattern
 
       local_rec = lambda do |pattern, num_rules_seen|
         case pattern.type
-        when STRING, CHARSET, ANY, LITERAL
-        # no op
-        when NOT, AND, REPEATED
+        when STRING, CHARSET, ANY, NTRUE, NFALSE
+          # no op
+        when NOT, AND, REPEATED, CAPTURE
           # nullable, so keep going
           local_rec.call(pattern.child, num_rules_seen)
         when CALL
@@ -835,6 +875,7 @@ class Instruction
   OP_CODES = %i[
                  char charset any jump choice call return commit back_commit
                  partial_commit span op_end fail fail_twice unreachable
+                 full_capture
                 ].each do |op|
     const_set op.upcase, op
   end
@@ -873,6 +914,34 @@ class Instruction
   end
 end
 
+module Capture
+  KINDS = %i[const].each do |kind|
+    const_set kind.upcase, kind
+  end
+
+  class VM
+    attr_reader :size, :subject_pos, :value, :kind
+    # From LPEG:
+    #
+    # typedef struct Capture {
+    #   const char *s;  /* subject position */
+    #   unsigned short idx;  /* extra info (group name, arg index, etc.) */
+    #   byte kind;  /* kind of capture */
+    #   byte siz;  /* size of full capture + 1 (0 = not a full capture) */
+    # } Capture;
+    #
+    # We use #value instead of #idx
+    def initialize(size, subject_pos, value, kind)
+      @size = size
+      @subject_pos = subject_pos
+      @value = value
+      @kind = kind
+
+      raise "Bad Capture kind #{@kind}" unless KINDS.include?(@kind)
+    end
+  end
+end
+
 class ParsingMachine
   # subject is the string to match against
 
@@ -886,11 +955,53 @@ class ParsingMachine
     @current_instruction = 0
     @current_subject_position = 0
     @stack = []
-    @capture_list = []
+    @capture_stack = []
   end
 
   def success?
     @success
+  end
+
+  # Returns the captures obtained when we ran the machine.
+  #
+  # If there are no captures we return the final index into the subject string. This is typically one past the matched section.
+  # If there is exactly one capture we return it
+  # If there are multiple captures we return them in an array (or perhaps other structures for more complex captures TBD)
+  #
+  # The capture code in LPEG is complicated and I don't understand very much of it. I think part of the complexity comes from the
+  # manual memory management required in C and the need to interact with Lua values. All I can think to do is a) implement things in
+  # a way that seems natural to me and that respects the LPEG documentation and tests and b) puzzle through the LPEG code when
+  # necessary.
+  #
+  # Some properties derived from the LPEG docs and tests.
+  # 1. an array capture gets flattened into the result.
+  #    - So if we have two constant captures of 1 and [2,3,4] in sequence, say, the result will be [1, 2, 3, 4], and not
+  #      [1, [2, 3, 4]]. Multiple match values are equivalent to sequential single match values.
+  def captures
+    raise "Cannot call #captures unless machine ran sucessfully" unless done? && success?
+
+    return final_index if @capture_stack.empty?
+
+    result = []
+
+    until @capture_stack.empty?
+      capture = @capture_stack.pop.must_be_a Capture::VM
+
+      case capture.kind
+      when Capture::CONST
+        result.push capture.value
+      else
+        raise "Unhandled capture kind #{capture.kind}"
+      end
+    end
+
+    # By popping off the stack we have accumulated the captures in the reverse order from their finding. So for now just reverse the
+    # order. We also flatten to squeeze out any multiple-value captures.
+    result = result.reverse.flatten
+
+    return result.first if result.size == 1
+
+    result
   end
 
   def run
@@ -957,7 +1068,7 @@ class ParsingMachine
         raise "Empty stack for partial commit!" unless stack_top
 
         stack_top[1] = @current_subject_position
-        stack_top[2] = @capture_list.clone
+        stack_top[2] = @capture_stack.clone
 
         @current_instruction += instr.offset
       when i::BACK_COMMIT
@@ -965,7 +1076,7 @@ class ParsingMachine
         # backtrack label. It's used for the AND pattern. See Ierusalimschy, 4.4
         _, subject_pos, captures = pop(:state)
         @current_subject_position = subject_pos
-        @capture_list = captures
+        @capture_stack = captures
         @current_instruction += instr.offset
       when i::SPAN
         # Special instruction for when i:wE are repeating over a charset, which is common. We just consume as many maching characters
@@ -987,8 +1098,17 @@ class ParsingMachine
         done!
       when i::UNREACHABLE
         raise "VM reached :unreachable instruction at line #{@current_instruction}"
+      when i::FULL_CAPTURE
+        len = instr.aux[:cap_len].must_be
+        push_capture(Capture::VM.new(
+                       1 + len,
+                       @current_subject_position - len,
+                       instr.data, # any constant value(s) for the match
+                       instr.aux[:kind]
+                     ))
+        @current_instruction += 1
       else
-        raise "Unsupported op code #{op_code}"
+        raise "Unsupported op code #{instr.op_code}"
       end
     end
   end
@@ -1016,7 +1136,7 @@ class ParsingMachine
         p, i, c = top
         @current_instruction = p
         @current_subject_position = i
-        @capture_list = c
+        @capture_stack = c
       end
     end
   end
@@ -1026,7 +1146,8 @@ class ParsingMachine
 
   # We push either
   # - an instruction pointer, which may later be used to jump, etc, or
-  # - the current state with an offset, which is the [instr ptr + offset, subject_pos, capture list] triple. Let's tag them for sanity's sake
+  # - the current state with an offset, which is the [instr ptr + offset, subject_pos, capture list] triple. Let's tag them for
+  #   sanity's sake
   private def push(type, offset)
     raise "must push something" unless offset
 
@@ -1034,7 +1155,7 @@ class ParsingMachine
     when :instruction
       @stack.push([:instruction, @current_instruction + offset])
     when :state
-      @stack.push([:state, [@current_instruction + offset, @current_subject_position, @capture_list.clone]])
+      @stack.push([:state, [@current_instruction + offset, @current_subject_position, @capture_stack.clone]])
     else
       raise "Bad push type #{type}"
     end
@@ -1065,5 +1186,11 @@ class ParsingMachine
     raise "Top of stack is of type #{tag}, not of expected type #{expecting}" if expecting && expecting != tag
 
     val
+  end
+
+  private def push_capture(capture)
+    capture.must_be_a Capture::VM
+
+    @capture_stack.push(capture)
   end
 end
