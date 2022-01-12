@@ -388,6 +388,8 @@ class Pattern
       2
     when GRAMMAR
       raise "#num_children isn't meaningful for GRAMMAR nodes"
+    else
+      raise "Unhandled pattern type #{type}"
     end
   end
 
@@ -633,57 +635,34 @@ class Pattern
     @left = rule_list
     @data = nil # we don't need the Hash any more
 
-    # TODO: redo this. I don't like the idea of using a vistor to find the open_call nodes while we are modifiying in-place. It
-    # works but feels fragile.
-    Pattern.visit(self) do |node|
-      next unless node.type == OPEN_CALL
+    # Traverse the grammar rules and fix open calls. Do it in-line so we don't risk traversing the tree(s) via a generic visitor
+    # while modifying the tree
+    fix_it = lambda do |node|
+      return if node.type == GRAMMAR # subgrammars already fixed
+      return if node.type == CALL # already done
 
-      ref = node.data
-      if ref.is_a?(Integer) && ref >= 0
-        symb_ref = @nonterminal_by_index[ref]
-        raise "bad grammar index for rule '#{ref}'" unless symb_ref
+      if node.type == OPEN_CALL
+        ref = node.data
+        if ref.is_a?(Integer) && ref >= 0
+          symb_ref = @nonterminal_by_index[ref]
+          raise "bad grammar index for rule '#{ref}'" unless symb_ref
 
-        ref = symb_ref
-      end
-      raise "bad grammar reference for rule '#{ref}'" unless @nonterminal_indices[ref]
-
-      rule = rule_hash[ref].must_be
-      node.convert_open_call_to_call!(rule, ref)
-    end
-  end
-
-  ########################################
-  # Visiting the nodes in a pattern tree
-
-  # Yield each node in the tree to caller. We visit breadth-first
-  def self.visit(pattern)
-    seen = Set.new
-    to_do = [pattern]
-    until to_do.empty?
-      node = to_do.shift
-      next if seen.include? node
-
-      seen << node
-
-      yield node
-
-      case node.type
-      when CHARSET, STRING, ANY, NTRUE, NFALSE, CALL, OPEN_CALL
-      # nothing more to do
-      when REPEATED, NOT, AND, RULE, CAPTURE
-        to_do << node.child
-      when ORDERED_CHOICE, SEQ
-        to_do << node.left
-        to_do << node.right
-      when GRAMMAR
-        node.child.each do |rule|
-          rule.type.must_be RULE
-          to_do << rule.child
+          ref = symb_ref
         end
-      else
-        raise "Unhandled pattern type #{node.type}"
+        raise "bad grammar reference for rule '#{ref}'" unless @nonterminal_indices[ref]
+
+        rule = rule_hash[ref].must_be
+        node.convert_open_call_to_call!(rule, ref)
+        return
       end
+
+      return if node.num_children.zero?
+
+      fix_it.call(node.left)
+      fix_it.call(node.right) if node.num_children == 2
     end
+
+    rule_list.each { |rule| fix_it.call(rule) }
   end
 
   # Namespace for some analysis methods
