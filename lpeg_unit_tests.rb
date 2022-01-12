@@ -143,12 +143,22 @@ class TestsFromLpegCode < Test::Unit::TestCase
     # -- bug in LPeg 0.12  (nil value does not create a 'ktable')
     assert_equal nil, m.match(m.Cc(nil), "")
 
-    # test.lua l.184
-    assert_equal [1, 2, 3, 4], m.match(m.Cc() * m.Cc() * m.Cc(1) * m.Cc(2,3,4) * m.Cc() * 'a', 'aaa')
+    # test.lua l.176
+    assert_equal [10, 20, 30, 1], m.match(m.Cc(10, 20, 30) * 'a' * m.Cp(), 'aaa')
+    assert_equal [0, 10, 20, 30, 1], m.match(m.Cp() * m.Cc(10, 20, 30) * 'a' * m.Cp(), 'aaa')
+    # assert_equal [0, 10, 20, 30, 1], m.match(m.Ct(m.Cp() * m.Cc(10, 20, 30) * 'a' * m.Cp()), 'aaa')
+    # assert_equal [0, 7, 8, 10, 20, 30, 1], m.match(m.Ct(m.Cp() * m.Cc(7, 8) * m.Cc(10, 20, 30) * 'a' * m.Cp()), 'aaa')
+    assert_equal [1, 2, 3, 4], m.match(m.Cc() * m.Cc() * m.Cc(1) * m.Cc(2, 3, 4) * m.Cc() * 'a', 'aaa')
+    assert_equal [0, 4], m.match(m.Cp() * letter**1 * m.Cp(), "abcd")
 
     # test.lua l.240
     assert_equal 1, m.match(m.Cc(0) * m.P(10) + m.Cc(1) * "xuxu", "xuxu")
     assert_equal 0, m.match(m.Cc(0) * m.P(10) + m.Cc(1) * "xuxu", "xuxuxuxuxu")
+
+    # test.lua l.314
+    # -- tests for capture optimizations
+    assert_equal 4, m.match((m.P(3) +  4 * m.Cp()) * "a", "abca")
+    assert_equal [2, 5], m.match(((m.P("a") + m.Cp()) * m.P("x"))**0, "axxaxx")
 
     # test.lua l.559
     p1 = -m.P('a') * m.Cc(1) + -m.P('b') * m.Cc(2) + -m.P('c') * m.Cc(3)

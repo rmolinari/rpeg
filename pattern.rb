@@ -116,6 +116,12 @@ class Pattern
       Pattern.new(CAPTURE, P(true), data: values, capture: Capture::CONST)
     end
 
+    # LPEG: Creates a position capture. It matches the empty string and captures the position in the subject where the match
+    # occurs. The captured value is a number.
+    def Cp
+      Pattern.new(CAPTURE, P(true), capture: Capture::POSITION)
+    end
+
     def match(thing, string)
       P(thing).match(string)
     end
@@ -439,6 +445,8 @@ class Pattern
         # Sanity check, and then render the subprogram anyway
         child.type.must_be NTRUE
         prog += child.program
+      when Capture::POSITION
+        prog << Instruction.new(i::FULL_CAPTURE, aux: {cap_len: 0, kind: Capture::POSITION})
       else
         raise "Unknown capture kind #{p.capture}"
       end
@@ -915,12 +923,13 @@ class Instruction
 end
 
 module Capture
-  KINDS = %i[const].each do |kind|
+  KINDS = %i[const position].each do |kind|
     const_set kind.upcase, kind
   end
 
   class VM
     attr_reader :size, :subject_pos, :value, :kind
+
     # From LPEG:
     #
     # typedef struct Capture {
@@ -988,7 +997,7 @@ class ParsingMachine
       capture = @capture_stack.pop.must_be_a Capture::VM
 
       case capture.kind
-      when Capture::CONST
+      when Capture::CONST, Capture::POSITION
         result.push capture.value
       else
         raise "Unhandled capture kind #{capture.kind}"
@@ -1100,10 +1109,20 @@ class ParsingMachine
         raise "VM reached :unreachable instruction at line #{@current_instruction}"
       when i::FULL_CAPTURE
         len = instr.aux[:cap_len].must_be
+        # any value(s) for the match that need to be populated now
+        kind = instr.aux[:kind].must_be
+
+        match_value = case kind
+                      when Capture::CONST
+                        instr.data
+                      when Capture::POSITION
+                        @current_subject_position
+                      end
+
         push_capture(Capture::VM.new(
                        1 + len,
                        @current_subject_position - len,
-                       instr.data, # any constant value(s) for the match
+                       match_value,
                        instr.aux[:kind]
                      ))
         @current_instruction += 1
