@@ -109,6 +109,12 @@ class Pattern
       Pattern.new(OPEN_CALL, data: ref)
     end
 
+    # LPEG: Creates a simple capture, which captures the substring of the subject that matches patt. The captured value is a
+    # string. If patt has other captures, their values are returned after this one.
+    def C(pattern)
+      Pattern.new(CAPTURE, pattern, capture: Capture::SIMPLE)
+    end
+
     # LPEG: Creates a constant capture. This pattern matches the empty string and produces all given values as its captured values.
     #
     # No value at all - Cc() - adds nothing to the result, which is different from a value of nil.
@@ -168,10 +174,10 @@ class Pattern
   # init: the string index to start at, defaulting to 0
   # extra_args: used by Argument Captures
   def match(str, init = 0, *extra_args)
-    machine = ParsingMachine.new(program + [Instruction.new(Instruction::OP_END)], str, init)
+    machine = ParsingMachine.new(program + [Instruction.new(Instruction::OP_END)], str, init, extra_args)
     machine.run
 
-    return machine.captures(extra_args) if machine.success?
+    return machine.captures if machine.success?
 
     # otherwise return nil
   end
@@ -460,16 +466,17 @@ class Pattern
       prog << Instruction.new(i::BACK_COMMIT, offset: 2)
       prog << Instruction.new(i::FAIL)
     when CAPTURE
-      prog << Instruction.new(i::FULL_CAPTURE, data: data, aux: { cap_len: 0, kind: capture })
-      prog += child.program
-      # case capture
-      # when Capture::CONST
-      # when Capture::POSITION, Capture::ARGUMENT
-      #   prog << Instruction.new(i::FULL_CAPTURE, data: data, aux: {cap_len: 0, kind: capture})
-      #   prog += child.program
-      # else
-      #   raise "Unknown capture kind #{p.capture}"
-      # end
+      case capture
+      when Capture::CONST, Capture::POSITION, Capture::ARGUMENT
+        prog << Instruction.new(i::FULL_CAPTURE, data: data, aux: { cap_len: 0, kind: capture })
+        prog += child.program
+      when Capture::SIMPLE
+        prog << Instruction.new(i::OPEN_CAPTURE, aux: { cap_len: 0, kind: capture})
+        prog += child.program
+        prog << Instruction.new(i::CLOSE_CAPTURE, aux: { cap_len: 0, kind: Capture::CLOSE})
+      else
+        raise "Unhandled capture kind #{capture}"
+      end
     when GRAMMAR
       start_line_of_nonterminal = {}
       full_rule_code = []
@@ -921,7 +928,7 @@ class Instruction
 end
 
 module Capture
-  KINDS = %i[const position argument].each do |kind|
+  KINDS = %i[const position argument simple close].each do |kind|
     const_set kind.upcase, kind
   end
 
@@ -947,6 +954,17 @@ module Capture
 
       raise "Bad Capture kind #{@kind}" unless KINDS.include?(@kind)
     end
+
+    # An "open" capture is a "full capture" if it has non-zero size. See isfullcap in lpcap.c
+    #
+    # This feels janky, but for now I'm following the LPEG capture code as closely as I can
+    def full_capture?
+      @size > 0
+    end
+
+    def close?
+      @kind == CLOSE
+    end
   end
 end
 
@@ -956,7 +974,8 @@ class ParsingMachine
 
   attr_reader :final_index
 
-  def initialize(program, subject, initial_pos)
+  # Extra args may have been supplied in the initial #match call. These are consumed by Argument Captures.
+  def initialize(program, subject, initial_pos, extra_args)
     @program = program.clone.freeze
     @prog_len = @program_size
     @subject = subject.clone.freeze
@@ -965,70 +984,12 @@ class ParsingMachine
     @current_subject_position = initial_pos
     @stack = []
     @capture_list = []
+
+    @extra_args = extra_args.clone
   end
 
   def success?
     @success
-  end
-
-  # Returns the captures obtained when we ran the machine.
-  #
-  # If there are no captures we return the final index into the subject string. This is typically one past the matched section.
-  # If there is exactly one capture we return it
-  # If there are multiple captures we return them in an array (or perhaps other structures for more complex captures TBD)
-  #
-  # The capture code in LPEG is complicated and I don't understand very much of it. I think part of the complexity comes from the
-  # manual memory management required in C and the need to interact with Lua values. All I can think to do is a) implement things in
-  # a way that seems natural to me and that respects the LPEG documentation and tests and b) puzzle through the LPEG code when
-  # necessary.
-  #
-  # The post-run capture retrieval is actually straightforward, at least at the top level: see getcaptures and pushcapture in
-  # lpcap.c. But the code in the VM for ICloseRuntime is terrifying.
-  #
-  # Basic model:
-  #
-  # - We push Capture objects onto the stack as we run the VM based on the instructions generated from the patterns. We never pop
-  #   anything from the stack: the Captures are breadcrumbs that let us work out after the fact what happend. Things do get removed
-  #   from the Capture stack but only at backtrack points because a match has failed.
-  # - The End instruction tacks on an unbalanced CloseCapture. This appears to be simply an end-marker like the null string
-  #   terminator.
-  # - After the VM runs we read through the Captures from the _oldest_ first until we reach the end-marker. So isn't not a stack,
-  #   but a queue.
-  #
-  # Some properties derived from the LPEG docs and tests.
-  # 1. an array capture gets flattened into the result.
-  #    - So if we have two constant captures of 1 and [2,3,4] in sequence, say, the result will be [1, 2, 3, 4], and not
-  #      [1, [2, 3, 4]]. Multiple match values are equivalent to sequential single match values.
-  #    - LPEG actually implements a multivalue constant capture as several single capture. This is cleaner overall and I will do the
-  #      same.
-  #
-  # - extra_args is the list of extra arguments provided to #match. These are used for argument captures
-  def captures(extra_args)
-    raise "Cannot call #captures unless machine ran sucessfully" unless done? && success?
-
-    return final_index if @capture_list.empty?
-
-    result = []
-
-    until @capture_list.empty?
-      capture = @capture_list.shift.must_be_a Capture::VM
-
-      case capture.kind
-      when Capture::CONST, Capture::POSITION
-        result << capture.value
-      when Capture::ARGUMENT
-        index = capture.value
-        raise "Reference to absent extra argument ##{index}" if index > extra_args.size
-
-        # with an Argument Capture the extra arguments are indexed from 1
-        result << extra_args[index - 1]
-      else
-        raise "Unhandled capture kind #{capture.kind}"
-      end
-    end
-
-    result = result.first if result.size == 1
-    result
   end
 
   def run
@@ -1235,5 +1196,131 @@ class ParsingMachine
     capture.must_be_a Capture::VM
 
     @capture_list.push(capture)
+  end
+
+  ########################################
+  # Capture extraction code
+
+  # Returns the captures obtained when we ran the machine.
+  #
+  # If there are no captures we return the final index into the subject string. This is typically one past the matched section.
+  # If there is exactly one capture we return it
+  # If there are multiple captures we return them in an array (or perhaps other structures for more complex captures TBD)
+  #
+  # The capture code in LPEG is complicated and I don't understand very much of it. I think part of the complexity comes from the
+  # manual memory management required in C and the need to interact with Lua values. All I can think to do is a) implement things in
+  # a way that seems natural to me and that respects the LPEG documentation and tests and b) puzzle through the LPEG code when
+  # necessary.
+  #
+  # The post-run capture retrieval is actually straightforward, at least at the top level: see getcaptures and pushcapture in
+  # lpcap.c. But the code in the VM for ICloseRuntime is terrifying.
+  #
+  # Basic model:
+  #
+  # - We push Capture objects onto the stack as we run the VM based on the instructions generated from the patterns. We never pop
+  #   anything from the stack: the Captures are breadcrumbs that let us work out after the fact what happend. Things do get removed
+  #   from the Capture stack but only at backtrack points because a match has failed.
+  # - The End instruction tacks on an unbalanced CloseCapture. This appears to be simply an end-marker like the null string
+  #   terminator.
+  # - After the VM runs we read through the Captures from the _oldest_ first until we reach the end-marker. So isn't not a stack,
+  #   but a queue.
+  #
+  # Some properties derived from the LPEG docs and tests.
+  # 1. an array capture gets flattened into the result.
+  #    - So if we have two constant captures of 1 and [2,3,4] in sequence, say, the result will be [1, 2, 3, 4], and not
+  #      [1, [2, 3, 4]]. Multiple match values are equivalent to sequential single match values.
+  #    - LPEG actually implements a multivalue constant capture as several single capture. This is cleaner overall and I will do the
+  #      same.
+  #
+  # - extra_args is the list of extra arguments provided to #match. These are used for argument captures
+  def captures
+    raise "Cannot call #captures unless machine ran sucessfully" unless done? && success?
+
+    return final_index if @capture_list.empty?
+
+    # set it aside in case we need it later. The capture methods will shift @capture_list as they go
+    @final_captures = @capture_list.clone
+
+    @captures = [] # accumulate them here
+
+    extract_next_capture until @capture_list.empty?
+
+    @captures = @captures.first if @captures.size == 1
+    @captures
+  end
+
+  # Extract the next capture, returning the number of values obtained.
+  private def extract_next_capture
+    capture = @capture_list.first.must_be_a Capture::VM
+
+    case capture.kind
+    when Capture::CONST, Capture::POSITION
+      @captures << capture.value
+      @capture_list.shift # consume it
+      1
+    when Capture::ARGUMENT
+      index = capture.value
+      raise "Reference to absent extra argument ##{index}" if index > @extra_args.size
+
+      # with an Argument Capture the extra arguments are indexed from 1
+      @captures << @extra_args[index - 1]
+      @capture_list.shift # consume it
+      1
+    when Capture::SIMPLE
+      count = extract_nested_captures(add_extra: true).must_be.positive?
+
+      # We need to make the whole match appear first in the list we just generated
+      if count > 1
+        back_shift = count - 1
+        whole_match = @captures.pop
+        @captures[(-back_shift)...(-back_shift)] = whole_match
+      end
+      count
+    else
+      raise "Unhandled capture kind #{capture.kind}"
+    end
+  end
+
+  # See pushnestedcaptures in lpcap.c
+  #
+  # /*
+  # ** Push on the Lua stack all values generated by nested captures inside
+  # ** the current capture. Returns number of values pushed. 'addextra'
+  # ** makes it push the entire match after all captured values. The
+  # ** entire match is pushed also if there are no other nested values,
+  # ** so the function never returns zero.
+  # */
+  #
+  # The "current capture" is the first one in the given list.
+  #
+  # We append what we find to @captures and return their number.
+  #
+  # Code is closely based on the LPEG code.
+  def extract_nested_captures(add_extra:)
+    open_capture = @capture_list.shift.must_be a Capture::VM
+
+    if open_capture.full_capture?
+      # This is presumably a nontrivial capture that was converted to a "full" capture in code optimization or at runtime.
+      # We don't do such optimziations yet but might.
+      cpos = capture.subject_pos
+      match_range = (cpos - capture.size + 1)..cpos
+      @captures << @subject[match_range]
+      return 1
+    end
+
+    count = 0
+    while !@capture_list.first.close?
+      count += extract_next_capture
+    end
+
+    # We have reached our matching close
+    close_capture = @capture_list.shift.must_be_a Capture::VM
+    if add_extra || count == 0
+      match_range = (open_capture.subject_pos)..(close_capture.subject_pos)
+      @captures << @subject[match_range]
+      count += 1
+    end
+
+    count
   end
 end
