@@ -9,3 +9,17 @@ Style/AccessModifierDeclarations:
 
 Style/StringLiterals:
   Enabled: false
+
+Metrics/MethodLength:
+  Max: 40
+  CountAsOne: ['array', 'hash']
+
+Metrics/AbcSize:
+  CountRepeatedAttributes: false
+  Max: 25
+
+Metrics/CyclomaticComplexity:
+  Max: 20
+
+Metrics/PerceivedComplexity:
+  Max: 15

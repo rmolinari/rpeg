@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 # See the README file for a little context. And also:
 #
 #   http://www.inf.puc-rio.br/~roberto/lpeg/#func
@@ -20,9 +22,9 @@ require 'ostruct'
 #     - "fewer than -n occurrences of patt" when n is negative
 class Pattern
   NODE_TYPES = %i[
-                   charset string any seq ordered_choice repeated not and
-                   ntrue nfalse grammar open_call rule call capture
-                 ].each do |op|
+    charset string any seq ordered_choice repeated not and
+    ntrue nfalse grammar open_call rule call capture
+  ].each do |op|
     const_set op.upcase, op
   end
 
@@ -132,12 +134,13 @@ class Pattern
     # Capture the n-th extra argument provided to #match. The first extra argument is n=1, etc.
     #
     # We accept missing argument to match some LPEG test cases. An error is raised
-    def Carg(n = nil)
-      raise "Invalid argument for Carg: #{n || 'nil'}" unless n && n.is_a?(Integer) && n.positive?
+    def Carg(num = nil)
+      raise "Invalid argument for Carg: #{num || 'nil'}" unless num.is_a?(Integer) && num&.positive?
 
-      Pattern.new(CAPTURE, P(true), data: n, capture: Capture::ARGUMENT)
+      Pattern.new(CAPTURE, P(true), data: num, capture: Capture::ARGUMENT)
     end
 
+    # See the instance method #match for the arguments
     def match(thing, string, init = 0, *extra_args)
       P(thing).match(string, init, *extra_args)
     end
@@ -195,11 +198,8 @@ class Pattern
     other = fix_type(other)
 
     # true is the identity for *
-    if other.type == NTRUE
-      return self
-    elsif type == NTRUE
-      return other
-    end
+    return self if other.type == NTRUE
+    return other if type == NTRUE
 
     Pattern.new(SEQ, self, other)
   end
@@ -458,7 +458,7 @@ class Pattern
       prog << Instruction.new(i::BACK_COMMIT, offset: 2)
       prog << Instruction.new(i::FAIL)
     when CAPTURE
-      prog << Instruction.new(i::FULL_CAPTURE, data: data, aux: {cap_len: 0, kind: capture})
+      prog << Instruction.new(i::FULL_CAPTURE, data: data, aux: { cap_len: 0, kind: capture })
       prog += child.program
       # case capture
       # when Capture::CONST
@@ -472,7 +472,7 @@ class Pattern
       start_line_of_nonterminal = {}
       full_rule_code = []
 
-      child.each_with_index do |rule, idx|
+      child.each do |rule|
         nonterminal = rule.data
         rule_pattern = rule.left
         start_line_of_nonterminal[nonterminal] = 2 + full_rule_code.size
@@ -554,7 +554,7 @@ class Pattern
     @data = ref
 
     # We must check these again when needed rather than use the memoized values
-    [:@nullable, :@nofail].each do |ivar|
+    %i[@nullable @nofail].each do |ivar|
       remove_instance_variable(ivar) if instance_variable_defined?(ivar)
     end
   end
@@ -656,7 +656,7 @@ class Pattern
   # Visiting the nodes in a pattern tree
 
   # Yield each node in the tree to caller. We visit breadth-first
-  def Pattern.visit(pattern)
+  def self.visit(pattern)
     seen = Set.new
     to_do = [pattern]
     until to_do.empty?
@@ -686,17 +686,16 @@ class Pattern
     end
   end
 
+  # Namespace for some analysis methods
   module Analysis
-    extend self
-
     CHECK_PREDICATES = %i[nullable nofail].freeze
 
     # These two are cached in pattern.nullable? and pattern.nofail?
-    def nullable?(pattern)
+    module_function def nullable?(pattern)
       check_pred(Pattern.P(pattern), :nullable)
     end
 
-    def nofail?(pattern)
+    module_function def nofail?(pattern)
       check_pred(Pattern.P(pattern), :nofail)
     end
 
@@ -715,13 +714,15 @@ class Pattern
     # **    p is nullable => nullable(p)
     # **    nofail(p) => p cannot fail
     #
-    # ** The function assumes that TOpenCall is not nullable; this will be checked again when the grammar is fixed.  Run-time captures
+    # ** The function assumes that TOpenCall is not nullable; this will be checked again when the grammar is fixed.  Run-time
+    # ** captures
+
     # ** can do whatever they want, so the result is conservative.
     # */
     #
     # TODO:
     #  - implement for our equivalent of TRep, TRunTime, TCaputre, etc. when we implement them
-    def check_pred(pattern, pred)
+    module_function def check_pred(pattern, pred)
       raise "Bad check predicate #{pred}" unless CHECK_PREDICATES.include?(pred)
 
       # loop to eliminate some tail calls, as in the LPEG code. I don't think it's really necessary - as my implementation is not
@@ -767,7 +768,7 @@ class Pattern
       end
     end
 
-    def verify_grammar(grammar)
+    module_function def verify_grammar(grammar)
       raise "Not a grammar!" unless grammar.type == GRAMMAR
 
       # /* check infinite loops inside rules */
@@ -794,7 +795,7 @@ class Pattern
     # ** counts the elements in 'passed'.
     # ** Assume ktable at the top of the stack.
     # */
-    def verify_rule(rule)
+    module_function def verify_rule(rule)
       rules_seen = []
 
       local_rec = lambda do |pattern, num_rules_seen|
@@ -836,7 +837,7 @@ class Pattern
     # /*
     # ** Check whether a tree has potential infinite loops
     # */
-    def loops?(pattern)
+    module_function def loops?(pattern)
       return true if pattern.type == REPEATED && pattern.child.nullable?
 
       # /* sub-grammars already checked */
@@ -868,7 +869,7 @@ class Pattern
 
   # Trying the technique from https://stackoverflow.com/a/61438012/1299011
   module NonNumericOverloadExtension
-    [:+, :*, :-].each do |sym|
+    %i[+ * -].each do |sym|
       define_method sym do |other|
         return Pattern.P(self).send(sym, other) if other.is_a?(Pattern)
 
@@ -899,10 +900,10 @@ end
 #   - it contains things like the Set/Range of characters for Charset instructions, the character count for Any instructions, etc.
 class Instruction
   OP_CODES = %i[
-                 char charset any jump choice call return commit back_commit
-                 partial_commit span op_end fail fail_twice unreachable
-                 full_capture
-                ].each do |op|
+    char charset any jump choice call return commit back_commit
+    partial_commit span op_end fail fail_twice unreachable
+    full_capture
+  ].each do |op|
     const_set op.upcase, op
   end
 
@@ -945,6 +946,7 @@ module Capture
     const_set kind.upcase, kind
   end
 
+  # Used inside the VM when recording Captures
   class VM
     attr_reader :size, :subject_pos, :value, :kind
 
@@ -969,6 +971,7 @@ module Capture
   end
 end
 
+# The VM used to run the programs generated from the patterns.
 class ParsingMachine
   # subject is the string to match against
 
@@ -1124,7 +1127,7 @@ class ParsingMachine
         @capture_list = captures
         @current_instruction += instr.offset
       when i::SPAN
-        # Special instruction for when i:wE are repeating over a charset, which is common. We just consume as many maching characters
+        # Special instruction for when we are repeating over a charset, which is common. We just consume as many maching characters
         # as there are. This never fails as we might just match zero
         @current_subject_position += 1 while instr.data.include?(@subject[@current_subject_position])
 
@@ -1144,30 +1147,34 @@ class ParsingMachine
       when i::UNREACHABLE
         raise "VM reached :unreachable instruction at line #{@current_instruction}"
       when i::FULL_CAPTURE
-        len = instr.aux[:cap_len].must_be
-        # any value(s) for the match that need to be populated now
-        kind = instr.aux[:kind].must_be
-
-        match_value = case kind
-                      when Capture::CONST, Capture::ARGUMENT
-                        instr.data
-                      when Capture::POSITION
-                        @current_subject_position
-                      else
-                        "Unhandled capture kind #{kind}"
-                      end
-
-        add_capture(Capture::VM.new(
-                       1 + len,
-                       @current_subject_position - len,
-                       match_value,
-                       instr.aux[:kind]
-                     ))
-        @current_instruction += 1
+        handle_capture(instr)
       else
         raise "Unsupported op code #{instr.op_code}"
       end
     end
+  end
+
+  private def handle_capture(instr)
+    len = instr.aux[:cap_len].must_be
+    # any value(s) for the match that need to be populated now
+    kind = instr.aux[:kind].must_be
+
+    match_value = case kind
+                  when Capture::CONST, Capture::ARGUMENT
+                    instr.data
+                  when Capture::POSITION
+                    @current_subject_position
+                  else
+                    "Unhandled capture kind #{kind}"
+                  end
+
+    add_capture(Capture::VM.new(
+                  1 + len,
+                  @current_subject_position - len,
+                  match_value,
+                  instr.aux[:kind]
+                ))
+    @current_instruction += 1
   end
 
   private def done!
