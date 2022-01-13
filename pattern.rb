@@ -135,14 +135,17 @@ class Pattern
     #
     # We capture several values with individual captures.
     def Cc(*values)
-      pattern = P(true)
-      until values.empty?
-        val = values.pop
+      return P(true) if values.empty?
 
-        pattern = Pattern.new(CAPTURE, pattern, data: val, capture: Capture::CONST)
+      patt = Pattern.new(CAPTURE, P(true), data: values.first, capture: Capture::CONST)
+      return patt if values.size == 1
+
+      # Otherwise, follow LPEG and make an anonymous Group capture over a sequence of single-val const captures
+      values[1...].each do |val|
+        patt *= Cc(val)
       end
 
-      pattern
+      Cg(patt)
     end
 
     # LPEG: Creates a position capture. It matches the empty string and captures the position in the subject where the match
@@ -158,6 +161,20 @@ class Pattern
       raise "Invalid argument for Carg: #{num || 'nil'}" unless num.is_a?(Integer) && num&.positive?
 
       Pattern.new(CAPTURE, P(true), data: num, capture: Capture::ARGUMENT)
+    end
+
+    # From LPEG docs:
+    #
+    #   Creates a group capture. It groups all values returned by patt into a single capture. The group may be anonymous (if no name
+    #   is given) or named with the given name (which can be any non-nil Lua value).
+    #
+    #   An anonymous group serves to join values from several captures into a single capture. A named group has a different
+    #   behavior. In most situations, a named group returns no values at all. Its values are only relevant for a following back
+    #   capture or when used inside a table capture.
+    #
+    # The name doesn't have to be string. It can be anything other than nil.
+    def Cg(pattern, name = nil)
+      Pattern.new(CAPTURE, P(pattern), data: name, capture: Capture::GROUP)
     end
 
     # See the instance method #match for the arguments
@@ -376,7 +393,7 @@ class Pattern
       result << type_s
       do_sub_pattern.call(child)
     when CAPTURE
-      result << "#{capture} #{data.inspect}"
+      result << "Capture: #{capture} #{data.inspect}"
       do_sub_pattern.call(child)
     when GRAMMAR
       result << "Grammar:"
@@ -515,16 +532,14 @@ class Pattern
       prog << Instruction.new(i::BEHIND, aux: data) if data.positive?
       prog += child.program
     when CAPTURE
-      case capture
-      when Capture::CONST, Capture::POSITION, Capture::ARGUMENT
-        prog << Instruction.new(i::FULL_CAPTURE, data: data, aux: { capture_length: 0, kind: capture })
+      len = fixed_len
+      if len >= 0 && !child.has_captures?
         prog += child.program
-      when Capture::SIMPLE
-        prog << Instruction.new(i::OPEN_CAPTURE, aux: { capture_length: 0, kind: capture })
+        prog << Instruction.new(i::FULL_CAPTURE, data: data, aux: { capture_length: len, kind: capture })
+      else
+        prog << Instruction.new(i::OPEN_CAPTURE, data: data, aux: { capture_length: 0, kind: capture })
         prog += child.program
         prog << Instruction.new(i::CLOSE_CAPTURE, aux: { capture_length: 0, kind: Capture::CLOSE })
-      else
-        raise "Unhandled capture kind #{capture}"
       end
     when GRAMMAR
       start_line_of_nonterminal = {}
@@ -940,8 +955,8 @@ class Pattern
         true
       when CALL
         call_recursive(node, ->(n) { has_captures?(n) }, false)
-      when RULE
-        has_captures?(rule.child)
+      when GRAMMAR
+        node.child.any? { |rule| has_captures?(rule) }
       else
         case node.num_children
         when 0
@@ -1074,7 +1089,9 @@ class Instruction
     when JUMP, CHOICE, CALL, COMMIT, BACK_COMMIT, PARTIAL_COMMIT
       str << " #{offset}"
     when RETURN, OP_END, FAIL, FAIL_TWICE, UNREACHABLE
-      # no-op
+    # no-op
+    when OPEN_CAPTURE, CLOSE_CAPTURE, FULL_CAPTURE
+      str << " data:#{data} aux:#{aux}"
     else
       raise "Unhandled op_code #{op_code} in Instruction#to_s"
     end
@@ -1083,7 +1100,7 @@ class Instruction
 end
 
 module Capture
-  KINDS = %i[const position argument simple close].each do |kind|
+  KINDS = %i[const position argument simple group close].each do |kind|
     const_set kind.upcase, kind
   end
 
@@ -1102,7 +1119,7 @@ module Capture
     #   byte siz;  /* size of full capture + 1 (0 = not a full capture) */
     # } Capture;
     #
-    # We use names
+    # We use
     # - size instead of siz
     # - subject_index instead of s
     # - value instead of idx
@@ -1117,7 +1134,7 @@ module Capture
 
     # An "open" capture is a "full capture" if it has non-zero size. See isfullcap in lpcap.c
     #
-    # This feels janky, but for now I'm following the LPEG capture code as closely as I can
+    # This feels goofy, but for now I'm following the LPEG capture code as closely as I can
     def full_capture?
       @size.positive?
     end
@@ -1516,11 +1533,24 @@ class ParsingMachine
     when Capture::SIMPLE
       count = extract_nested_captures(add_extra: true)
       count.must_be.positive?
-
       # We need to make the whole match appear first in the list we just generated
-      if count > 1
-        @capture_state.munge_last!(count)
-      end
+      @capture_state.munge_last!(count) if count > 1
+      count
+    when Capture::GROUP
+      # LPEG: lpcap.c
+      # case Cgroup: {
+      #   if (cs->cap->idx == 0)  /* anonymous group? */
+      #     res = pushnestedvalues(cs, 0);  /* add all nested values */
+      #   else {  /* named group: add no values */
+      #     nextcap(cs);  /* skip capture */
+      #     res = 0;
+      #   }
+      #   break;
+
+      raise "Named captures not supported yet" if capture.value
+
+      count = extract_nested_captures(add_extra: false)
+      count.must_be.positive?
       count
     else
       raise "Unhandled capture kind #{capture.kind}"

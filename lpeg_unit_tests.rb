@@ -316,6 +316,21 @@ class TestsFromLpegCode < Test::Unit::TestCase
     assert_match_raises_error("pattern may not have fixed length", -> { m.B(p) }, nil)
   end
 
+  def test_group_capture
+    # -- tests for groups
+    p = m.Cg(1) # -- no capture
+    assert_equal 'x', p.match('x')
+
+    # TODO: comment out when we have /-captures
+    # p = m.Cg(m.P(true)/function () end * 1)   -- no value
+    # assert(p:match('x') == 'x')
+
+    p = m.Cg(m.Cg(m.Cg(m.C(1))))
+    assert_equal 'x', p.match('x')
+    p = m.Cg(m.Cg(m.Cg(m.C(1))**0) * m.Cg(m.Cc(1) * m.Cc(2)))
+    assert_equal ['a', 'b', 'c', 1, 2], p.match('abc')
+  end
+
   # Helpers to make it easier to use the tests copied from the Lua code
   def m
     Pattern

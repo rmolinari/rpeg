@@ -208,17 +208,6 @@ t = m.match(m.Ct(m.C(m.C(1) * 1 * m.C(1))), "alo")
 checkeq(t, {"alo", "a", "o"})
 
 
--- tests for groups
-p = m.Cg(1)   -- no capture
-assert(p:match('x') == 'x')
-p = m.Cg(m.P(true)/function () end * 1)   -- no value
-assert(p:match('x') == 'x')
-p = m.Cg(m.Cg(m.Cg(m.C(1))))
-assert(p:match('x') == 'x')
-p = m.Cg(m.Cg(m.Cg(m.C(1))^0) * m.Cg(m.Cc(1) * m.Cc(2)))
-t = {p:match'abc'}
-checkeq(t, {'a', 'b', 'c', 1, 2})
-
 p = m.Ct(m.Cg(m.Cc(10), "hi") * m.C(1)^0 * m.Cg(m.Cc(20), "ho"))
 t = p:match''
 checkeq(t, {hi = 10, ho = 20})
