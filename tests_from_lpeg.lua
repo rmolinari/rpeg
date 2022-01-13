@@ -724,21 +724,9 @@ end
 print"+"
 
 
--- tests for back references
-checkerr("back reference 'x' not found", m.match, m.Cb('x'), '')
-checkerr("back reference 'b' not found", m.match, m.Cg(1, 'a') * m.Cb('b'), 'a')
-
 p = m.Cg(m.C(1) * m.C(1), "k") * m.Ct(m.Cb("k"))
 t = p:match("ab")
 checkeq(t, {"a", "b"})
-
-p = m.P(true)
-for i = 1, 10 do p = p * m.Cg(1, i) end
-for i = 1, 10 do
-  local p = p * m.Cb(i)
-  assert(p:match('abcdefghij') == string.sub('abcdefghij', i, i))
-end
-
 
 t = {}
 function foo (p) t[#t + 1] = p; return p .. "x" end

@@ -331,6 +331,19 @@ class TestsFromLpegCode < Test::Unit::TestCase
     assert_equal ['a', 'b', 'c', 1, 2], p.match('abc')
   end
 
+  def test_back_references
+    assert_match_raises_error("back reference 'x' not found", m.Cb('x'), '')
+    assert_match_raises_error("back reference 'b' not found", m.Cg(1, 'a') * m.Cb('b'), 'a')
+
+    p = m.P(true)
+    (1..10).each { |i| p = p * m.Cg(1, i) }
+    (1..10).each do |i|
+      patt = p * m.Cb(i)
+      subject = 'abcdefghij'
+      assert_equal subject[i - 1, 1], patt.match(subject)
+    end
+  end
+
   # Helpers to make it easier to use the tests copied from the Lua code
   def m
     Pattern
