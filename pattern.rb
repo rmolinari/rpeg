@@ -20,15 +20,19 @@ require 'ostruct'
 #   - so patt**n means
 #     - "n or more occurrences of patt" when n is non-negative
 #     - "fewer than -n occurrences of patt" when n is negative
+# - grammars are represented by hashes. LPEG uses Lua tables
+#   - the first pair in the hash gives the initial nonterminal
+#   - TODO: support a key of :initial to say which one is the first
 class Pattern
   NODE_TYPES = %i[
     charset string any seq ordered_choice repeated not and
-    ntrue nfalse grammar open_call rule call capture
+    ntrue nfalse grammar open_call rule call capture behind
   ].each do |op|
     const_set op.upcase, op
   end
 
-  attr_reader :type, :left, :right, :data, :capture
+  attr_reader :type, :left, :right, :capture
+  attr_accessor :data # sometimes we need to tweak this
 
   class << self
     # Match any character in string (regarded as a set of characters), range, or Set
@@ -159,6 +163,19 @@ class Pattern
     # See the instance method #match for the arguments
     def match(thing, string, init = 0, *extra_args)
       P(thing).match(string, init, *extra_args)
+    end
+
+    # Returns a pattern that matches only if the input string at the current position is preceded by patt. Pattern patt must match
+    # only strings with some fixed length, and it cannot contain captures.
+    def B(patt)
+      patt = P(patt)
+      len = Analysis.fixed_len(patt)
+      raise "Behind match: pattern may not have fixed length" unless len >= 0
+      raise "Behind match: pattern has captures" if Analysis.has_captures?(patt)
+      # LPEG puts an upper bound of MAXBEHIND = 255 on how large the match can be here. I think it is because the value is packed
+      # into a byte of memory. We don't care about that here
+
+      Pattern.new(BEHIND, patt, data: len)
     end
 
     private def charset_union(cs1, cs2)
@@ -398,7 +415,7 @@ class Pattern
     case type
     when CHARSET, STRING, ANY, NTRUE, NFALSE, OPEN_CALL
       0
-    when REPEATED, AND, NOT, CALL, RULE, CAPTURE
+    when REPEATED, AND, NOT, CALL, RULE, CAPTURE, BEHIND
       1
     when SEQ, ORDERED_CHOICE
       2
@@ -475,6 +492,9 @@ class Pattern
       prog += p
       prog << Instruction.new(i::BACK_COMMIT, offset: 2)
       prog << Instruction.new(i::FAIL)
+    when BEHIND
+      prog << Instruction.new(i::BEHIND, aux: data) if data.positive?
+      prog += child.program
     when CAPTURE
       case capture
       when Capture::CONST, Capture::POSITION, Capture::ARGUMENT
@@ -526,10 +546,10 @@ class Pattern
         end
       end
     else
-      raise "Unknown pattern type #{type}"
+      raise "Unhandled pattern type #{type}"
     end
 
-    @program = prog.map(&:freeze).freeze
+    @program = prog.freeze
   end
 
   ########################################
@@ -583,35 +603,36 @@ class Pattern
 
     case type
     when CHARSET
-      right.must_be nil
-      left.must_be nil
       data.must_be_a(Set, Range)
     when NTRUE, NFALSE
-      right.must_be nil
-      left.must_be nil
       data.must_be nil
     when GRAMMAR
-      right.must_be nil
-      left.must_be nil
       data.must_be_a(Hash)
       data.must_not.empty?
     when OPEN_CALL
-      right.must_be nil
-      left.must_be nil
       data.must_not.negative? if left.is_a?(Integer)
     when CALL
-      left_must_be_a(Rule)
-      right.must_be nil
       data.must_be
     when RULE
-      left.must_be_a Pattern
-      right.must_be nil
       data.must_be
     when CAPTURE
-
-      left.must_be_a Pattern
-      right.must_be nil
       capture.must_be
+    when BEHIND
+      data.must_be
+    end
+
+    return if type == GRAMMAR
+
+    case num_children
+    when 0
+      left.must_be nil
+      right.must_be nil
+    when 1
+      left.must_be_a(Pattern)
+      right.must_be nil
+    when 2
+      left.must_be_a(Pattern)
+      right.must_be_a(Pattern)
     end
   end
 
@@ -685,14 +706,16 @@ class Pattern
 
   # Namespace for some analysis methods
   module Analysis
+    extend self
+
     CHECK_PREDICATES = %i[nullable nofail].freeze
 
     # These two are cached in pattern.nullable? and pattern.nofail?
-    module_function def nullable?(pattern)
+    def nullable?(pattern)
       check_pred(Pattern.P(pattern), :nullable)
     end
 
-    module_function def nofail?(pattern)
+    def nofail?(pattern)
       check_pred(Pattern.P(pattern), :nofail)
     end
 
@@ -719,7 +742,7 @@ class Pattern
     #
     # TODO:
     #  - implement for our equivalent of TRep, TRunTime, TCaputre, etc. when we implement them
-    module_function def check_pred(pattern, pred)
+    def check_pred(pattern, pred)
       raise "Bad check predicate #{pred}" unless CHECK_PREDICATES.include?(pred)
 
       # loop to eliminate some tail calls, as in the LPEG code. I don't think it's really necessary - as my implementation is not
@@ -765,7 +788,7 @@ class Pattern
       end
     end
 
-    module_function def verify_grammar(grammar)
+    def verify_grammar(grammar)
       raise "Not a grammar!" unless grammar.type == GRAMMAR
 
       # /* check infinite loops inside rules */
@@ -792,7 +815,7 @@ class Pattern
     # ** counts the elements in 'passed'.
     # ** Assume ktable at the top of the stack.
     # */
-    module_function def verify_rule(rule)
+    def verify_rule(rule)
       rules_seen = []
 
       local_rec = lambda do |pattern, num_rules_seen|
@@ -829,12 +852,12 @@ class Pattern
       local_rec.call(rule, 0)
     end
 
-    # From lptree.c
+    # From checkloops in lptree.c
     #
     # /*
     # ** Check whether a tree has potential infinite loops
     # */
-    module_function def loops?(pattern)
+    def loops?(pattern)
       return true if pattern.type == REPEATED && pattern.child.nullable?
 
       # /* sub-grammars already checked */
@@ -853,6 +876,106 @@ class Pattern
         return true if fst
 
         loops?(pattern.right)
+      end
+    end
+
+    # From callrecursive in LPEG's lpcode.c
+    #
+    # /*
+    # ** Visit a TCall node taking care to stop recursion. If node not yet
+    # ** visited, return 'f(sib2(tree))', otherwise return 'def' (default
+    # ** value)
+    # */
+    #
+    # This method acts as a sort of circuit breaker for structural recursion that might otherwise get in a loop among mutually
+    # recursive grammar rules.
+    #
+    # It's janky, but we follow LPEG's approach of hijacking the key field (which we call data) to keep track of the recursion
+    def call_recursive(call_node, func, default)
+      call_node.must_be
+      call_node.type.must_be CALL
+      call_node.child.type.must_be RULE
+
+      already_visited = :already_visited
+
+      data = call_node.data
+
+      if data == already_visited
+        default
+      else
+        # first time we've been here
+        call_node.data = already_visited
+        result = func.call(call_node)
+        call_node.data = data
+        result
+      end
+    end
+
+    # From hascaptures in LPEG's lpcode.c
+    # /*
+    # ** Check whether a pattern tree has captures
+    # */
+    def has_captures?(node)
+      case node.type
+      when CAPTURE
+        true
+      when CALL
+        call_recursive(node, ->(n) { has_captures?(n) }, false)
+      when RULE
+        has_captures?(rule.child)
+      else
+        case node.num_children
+        when 0
+          false
+        when 1
+          has_captures?(node.child)
+        when 2
+          return true if has_captures?(node.left)
+
+          has_captures?(node.right)
+        end
+      end
+    end
+
+    # fixedlen from LPEG's lpcode.h
+    #
+    # /*
+    # ** number of characters to match a pattern (or -1 if variable)
+    # */
+    #
+    # We return -Infinity if the node's matches are not all of the same length
+    def fixed_len(node)
+      minus_infty = -Float::INFINITY
+      case node.type
+      when CHARSET
+        1
+      when ANY
+        node.data
+      when STRING
+        node.data.length
+      when NOT, AND, NTRUE, NFALSE
+        0
+      when REPEATED, OPEN_CALL
+        minus_infty
+      when CAPTURE, RULE
+        fixed_len(node.child)
+      when GRAMMAR
+        fixed_len(node.child.first) # the first rule is the initial nonterminal
+      when CALL
+        call_recursive(node, ->(n) { fixed_len(n) }, minus_infty)
+      when SEQ
+        left_len = fixed_len(node.left)
+        return left_len if left_len == minus_infty
+
+        left_len + fixed_len(node.right)
+      when ORDERED_CHOICE
+        left_len = fixed_len(node.left)
+        return left_len if left_len == minus_infty
+
+        right_len = fixed_len(node.right)
+        right_len == left_len ? right_len : minus_infty
+      else
+        raise "Unhandled node type #{node.type}"
       end
     end
   end
@@ -899,7 +1022,7 @@ class Instruction
   OP_CODES = %i[
     char charset any jump choice call return commit back_commit
     partial_commit span op_end fail fail_twice unreachable
-    open_capture close_capture full_capture
+    open_capture close_capture full_capture behind
   ].each do |op|
     const_set op.upcase, op
   end
@@ -925,6 +1048,8 @@ class Instruction
     case op_code
     when CHAR, ANY
       str << " #{data}"
+    when BEHIND
+      str << " #{aux}"
     when CHARSET, SPAN
       str << " #{data.join}"
     when JUMP, CHOICE, CALL, COMMIT, BACK_COMMIT, PARTIAL_COMMIT
@@ -1093,6 +1218,15 @@ class ParsingMachine
         @subject_index += 1 while instr.data.include?(@subject[@subject_index])
 
         @i_ptr += 1
+      when i::BEHIND
+        n = instr.aux
+        if n > @subject_index
+          # We can't jump back in the index so far
+          @i_ptr = :fail
+        else
+          @subject_index -= n
+          @i_ptr += 1
+        end
       when i::FAIL
         # We trigger the fail routine
         @i_ptr = :fail

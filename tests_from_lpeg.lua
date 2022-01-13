@@ -385,46 +385,6 @@ assert(m.match("\0\0\0", "\0\0\0") == 4)
 assert(not m.match("\0\0\0", "\0\0"))
 
 
--- tests for predicates
-assert(not m.match(-m.P("a") * 2, "alo"))
-assert(m.match(- -m.P("a") * 2, "alo") == 3)
-assert(m.match(#m.P("a") * 2, "alo") == 3)
-assert(m.match(##m.P("a") * 2, "alo") == 3)
-assert(not m.match(##m.P("c") * 2, "alo"))
-assert(m.match(m.Cs((##m.P("a") * 1 + m.P(1)/".")^0), "aloal") == "a..a.")
-assert(m.match(m.Cs((#((#m.P"a")/"") * 1 + m.P(1)/".")^0), "aloal") == "a..a.")
-assert(m.match(m.Cs((- -m.P("a") * 1 + m.P(1)/".")^0), "aloal") == "a..a.")
-assert(m.match(m.Cs((-((-m.P"a")/"") * 1 + m.P(1)/".")^0), "aloal") == "a..a.")
-
-
--- fixed length
-do
-  -- 'and' predicate using fixed length
-  local p = m.C(#("a" * (m.P("bd") + "cd")) * 2)
-  assert(p:match("acd") == "ac")
-
-  p = #m.P{ "a" * m.V(2), m.P"b" } * 2
-  assert(p:match("abc") == 3)
-
-  p = #(m.P"abc" * m.B"c")
-  assert(p:match("abc") == 1 and not p:match("ab"))
- 
-  p = m.P{ "a" * m.V(2), m.P"b"^1 }
-  checkerr("pattern may not have fixed length", m.B, p)
-
-  p = "abc" * (m.P"b"^1 + m.P"a"^0)
-  checkerr("pattern may not have fixed length", m.B, p)
-end
-
-
--- look-behind predicate
-assert(not m.match(m.B'a', 'a'))
-assert(m.match(1 * m.B'a', 'a') == 2)
-assert(not m.match(m.B(1), 'a'))
-assert(m.match(1 * m.B(1), 'a') == 2)
-assert(m.match(-m.B(1), 'a') == 1)
-assert(m.match(m.B(250), string.rep('a', 250)) == nil)
-assert(m.match(250 * m.B(250), string.rep('a', 250)) == 251)
 
 -- look-behind with an open call
 checkerr("pattern may not have fixed length", m.B, m.V'S1')

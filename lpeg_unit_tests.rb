@@ -63,6 +63,29 @@ class TestsFromLpegCode < Test::Unit::TestCase
     # eqcharset(m.S"\1\0\2" - "\0", m.R"\1\2")
   end
 
+  def test_predicates
+    # -- tests for predicates
+    assert_nil m.match(-m.P("a") * 2, "alo")
+    assert_equal 2, m.match(- -m.P("a") * 2, "alo")
+    assert_equal 2, m.match(+m.P("a") * 2, "alo")
+    assert_equal 2, m.match(++m.P("a") * 2, "alo")
+    assert_nil m.match(++m.P("c") * 2, "alo")
+    # TODO: uncomment when we support the / operator for captures
+    # assert_equal "a..a.", m.match(m.Cs((++m.P("a") * 1 + m.P(1)/".")^0), "aloal")
+    # assert_equal "a..a.", m.match(m.Cs((+((+m.P"a")/"") * 1 + m.P(1)/".")^0), "aloal")
+    # assert_equal "a..a.", m.match(m.Cs((- -m.P("a") * 1 + m.P(1)/".")^0), "aloal")
+    # assert_equal "a..a.", m.match(m.Cs((-((-m.P"a")/"") * 1 + m.P(1)/".")^0), "aloal")
+
+    # -- look-behind predicate
+    assert_nil m.match(m.B('a'), 'a')
+    assert_equal 1, m.match(1 * m.B('a'), 'a')
+    assert_nil m.match(m.B(1), 'a')
+    assert_equal 1, m.match(1 * m.B(1), 'a')
+    assert_equal 0, m.match(-m.B(1), 'a')
+    assert_nil m.match(m.B(250), 'a' * 250)
+    assert_equal 250, m.match(250 * m.B(250), 'a' * 250)
+  end
+
   def test_word_constructs
     assert (word**0 * -1).match("alo alo")
     assert m.match(word**1 * -1, "alo alo")
@@ -207,8 +230,8 @@ class TestsFromLpegCode < Test::Unit::TestCase
   end
 
   def test_simple_captures
-    assert_equal ["123", "d"], m.match(m.C(digit**1 * m.Cc("d")) + m.C(letter**1 * m.Cc("l")), "123")
-    assert_equal ["abcd", "l"], m.match(m.C(digit**1 * m.Cc("d")) + m.C(letter**1 * m.Cc("l")), "abcd")
+    assert_equal %w[123 d], m.match(m.C(digit**1 * m.Cc("d")) + m.C(letter**1 * m.Cc("l")), "123")
+    assert_equal %w[abcd l], m.match(m.C(digit**1 * m.Cc("d")) + m.C(letter**1 * m.Cc("l")), "abcd")
 
     # $do_it = true
     assert_equal ["abc", "a", "bc", "b", "c", "c", ""], m.match({ S: m.C(m.C(1) * m.V(0) + -1) }, "abc")
@@ -221,9 +244,9 @@ class TestsFromLpegCode < Test::Unit::TestCase
     # matched by S1, and not actually consuming the string. So we don't have a capture in the result and just return 0 for an empty
     # match.
     patt1 = m.P({
-      S: +m.V('S1'),    # -- rule has capture, but '#' must ignore it
-      S1: m.C('abc') + 3
-    })
+                  S: +m.V('S1'), # -- rule has capture, but '#' must ignore it
+                  S1: m.C('abc') + 3
+                })
     assert_equal 0, patt1.match('abc')
 
     # -- bug: loop in 'hascaptures'
@@ -274,8 +297,24 @@ class TestsFromLpegCode < Test::Unit::TestCase
     # p = m.Cc(0) * 1 + m.Cc(1) * 2 + m.Cc(2) * 3 + m.Cc(3) * 4
   end
 
-  ## %%%
-  ## - up to l.151 in test.lua
+  def test_fixed_length
+    # -- 'and' predicate using fixed length
+    p = m.C(+("a" * (m.P("bd") + "cd")) * 2)
+    assert_equal "ac", p.match("acd")
+
+    p = +m.P({ S: "a" * m.V(1), T: m.P("b") }) * 2
+    assert_equal 2, p.match("abc")
+
+    p = +(m.P("abc") * m.B("c"))
+    assert_equal 0, p.match("abc")
+    assert_nil p.match("ab")
+
+    p = m.P({ S: "a" * m.V(1), T: m.P("b")**1 })
+    assert_match_raises_error("pattern may not have fixed length", -> { m.B(p) }, nil)
+
+    p = "abc" * (m.P("b")**1 + m.P("a")**0)
+    assert_match_raises_error("pattern may not have fixed length", -> { m.B(p) }, nil)
+  end
 
   # Helpers to make it easier to use the tests copied from the Lua code
   def m
@@ -293,7 +332,7 @@ class TestsFromLpegCode < Test::Unit::TestCase
   end
 
   def a_lambda
-    @a_lambda ||= lambda { |x| x }
+    @a_lambda ||= ->(x) { x }
   end
 
   def digit; m.S("0123456789"); end
