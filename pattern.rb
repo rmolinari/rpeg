@@ -169,9 +169,9 @@ class Pattern
     # only strings with some fixed length, and it cannot contain captures.
     def B(patt)
       patt = P(patt)
-      len = Analysis.fixed_len(patt)
+      len = patt.fixed_len
       raise "Behind match: pattern may not have fixed length" unless len >= 0
-      raise "Behind match: pattern has captures" if Analysis.has_captures?(patt)
+      raise "Behind match: pattern has captures" if patt.has_captures?
       # LPEG puts an upper bound of MAXBEHIND = 255 on how large the match can be here. I think it is because the value is packed
       # into a byte of memory. We don't care about that here
 
@@ -411,6 +411,14 @@ class Pattern
     @nofail = Analysis.nofail?(self)
   end
 
+  def fixed_len
+    Analysis.fixed_len(self)
+  end
+
+  def has_captures?
+    Analysis.has_captures?(self)
+  end
+
   def num_children
     case type
     when CHARSET, STRING, ANY, NTRUE, NFALSE, OPEN_CALL
@@ -486,12 +494,23 @@ class Pattern
       prog += p
       prog << Instruction.new(i::FAIL_TWICE)
     when AND
+      # LPEG:
+      # /*
+      # ** And predicate
+      # ** optimization: fixedlen(p) = n ==> <&p> == <p>; behind n
+      # ** (valid only when 'p' has no captures)
+      # */
       p = child.program
-
-      prog << Instruction.new(i::CHOICE, offset: 2 + p.size)
-      prog += p
-      prog << Instruction.new(i::BACK_COMMIT, offset: 2)
-      prog << Instruction.new(i::FAIL)
+      len = child.fixed_len
+      if len >= 0 && !child.has_captures?
+        prog += p
+        prog << Instruction.new(i::BEHIND, aux: len) if len.positive?
+      else
+        prog << Instruction.new(i::CHOICE, offset: 2 + p.size)
+        prog += p
+        prog << Instruction.new(i::BACK_COMMIT, offset: 2)
+        prog << Instruction.new(i::FAIL)
+      end
     when BEHIND
       prog << Instruction.new(i::BEHIND, aux: data) if data.positive?
       prog += child.program
@@ -953,7 +972,7 @@ class Pattern
         node.data
       when STRING
         node.data.length
-      when NOT, AND, NTRUE, NFALSE
+      when NOT, AND, NTRUE, NFALSE, BEHIND
         0
       when REPEATED, OPEN_CALL
         minus_infty
