@@ -191,9 +191,19 @@ class Pattern
       Pattern.new(CAPTURE, P(true), capture: Capture::POSITION)
     end
 
-    # See the instance method #match for the arguments
-    def match(thing, string, init = 0, *extra_args)
-      P(thing).match(string, init, *extra_args)
+    # From LPEG:
+    #   Creates a table capture. This capture returns a table with all values from all anonymous captures made by patt inside this
+    #   table in successive integer keys, starting at 1. Moreover, for each named capture group created by patt, the first value of
+    #   the group is put into the table with the group name as its key. The captured value is only the table.
+    #
+    # For us, if there are no named group captures we return an array with the anonymous captures. Otherwise we return a hash with
+    # integer keys 0, 1, 2, ... for the anonymous captures and the group names as keys for the others.
+    #
+    # So, the anonymous captures are available in the result, r, as r[0], r[1], ..., and the named captures as r[name].
+    #
+    # "Table" is a Lua term and is a thing a bit like a hashtable crossed with an array.
+    def Ct(patt)
+      Pattern.new(CAPTURE, P(patt), capture: Capture::TABLE)
     end
 
     # Returns a pattern that matches only if the input string at the current position is preceded by patt. Pattern patt must match
@@ -203,10 +213,15 @@ class Pattern
       len = patt.fixed_len
       raise "Behind match: pattern may not have fixed length" unless len >= 0
       raise "Behind match: pattern has captures" if patt.has_captures?
+
       # LPEG puts an upper bound of MAXBEHIND = 255 on how large the match can be here. I think it is because the value is packed
       # into a byte of memory. We don't care about that here
-
       Pattern.new(BEHIND, patt, data: len)
+    end
+
+    # See the instance method #match for the arguments
+    def match(thing, string, init = 0, *extra_args)
+      P(thing).match(string, init, *extra_args)
     end
 
     private def charset_union(cs1, cs2)
@@ -868,7 +883,7 @@ class Pattern
 
       local_rec = lambda do |pattern, num_rules_seen|
         case pattern.type
-        when STRING, CHARSET, ANY, NTRUE, NFALSE
+        when STRING, CHARSET, ANY, NTRUE, NFALSE, BEHIND
           # no op
         when NOT, AND, REPEATED, CAPTURE
           # nullable, so keep going
@@ -1114,7 +1129,7 @@ class Instruction
 end
 
 module Capture
-  KINDS = %i[const position argument simple group backref close].each do |kind|
+  KINDS = %i[const position argument simple group backref table close].each do |kind|
     const_set kind.upcase, kind
   end
 
@@ -1510,15 +1525,9 @@ class ParsingMachine
 
     return @subject_index if @breadcrumbs.empty?
 
-    # set it aside in case we need it later. The capture methods will shift @breadcrumbs as they go
-    @final_captures = @breadcrumbs.clone
-
-    # During capture analysis we actually need to go back and forth the @breadcrumbs array. For example, consider the work we need
-    # to do with named group captures (Cg) and associated backref captures (Cb). So can cannot simple shift/pop elements off
-    # @bredcrumbs. Instead, we keep track of where we are at the momment with this index.
     @capture_state = CaptureState.new(@breadcrumbs)
 
-    extract_next_capture until @capture_state.done?
+    push_capture until @capture_state.done?
 
     result = @capture_state.captures
     result = result.first if result.size == 1
@@ -1526,16 +1535,16 @@ class ParsingMachine
   end
 
   # Extract the next capture, returning the number of values obtained.
-  private def extract_next_capture
-    capture = @capture_state.peek
+  private def push_capture
+    capture = @capture_state.current_breadcrumb
 
     case capture.kind
     when Capture::CONST
-      @capture_state << capture.value
+      @capture_state.push capture.value
       @capture_state.advance
       1
     when Capture::POSITION
-      @capture_state << capture.subject_index
+      @capture_state.push capture.subject_index
       @capture_state.advance
       1
     when Capture::ARGUMENT
@@ -1543,11 +1552,11 @@ class ParsingMachine
       raise "Reference to absent extra argument ##{index}" if index > @extra_args.size
 
       # with an Argument Capture the extra arguments are indexed from 1
-      @capture_state << @extra_args[index - 1]
+      @capture_state.push @extra_args[index - 1]
       @capture_state.advance
       1
     when Capture::SIMPLE
-      count = extract_nested_captures(add_extra: true)
+      count = push_nested_captures(add_extra: true)
       count.must_be.positive?
       # We need to make the whole match appear first in the list we just generated
       @capture_state.munge_last!(count) if count > 1
@@ -1555,20 +1564,22 @@ class ParsingMachine
     when Capture::GROUP
       if capture.value
         # Named group. We don't extract anything but just move forward. A Backref capture might find us later
-        @capture_state.seeknext!
+        @capture_state.seek_next!
         0
       else
-        count = extract_nested_captures(add_extra: false)
+        count = push_nested_captures(add_extra: false)
         count.must_be.positive?
         count
       end
     when Capture::BACKREF
       group_name = capture.value
       breadcrumb_idx = @capture_state.index
-      @capture_state.seekbackref!(group_name) # this updates the capture state index
-      count = extract_nested_captures(add_extra: false)
+      @capture_state.seek_back_ref!(group_name) # this updates the capture state index
+      count = push_nested_captures(add_extra: false)
       @capture_state.index = breadcrumb_idx + 1 # restore our location and step to the next one
       count
+    when Capture::TABLE
+      push_table_capture
     else
       raise "Unhandled capture kind #{capture.kind}"
     end
@@ -1587,8 +1598,9 @@ class ParsingMachine
   # We append what we find to the capture state and return their number.
   #
   # Code is closely based on the LPEG code.
-  def extract_nested_captures(add_extra:)
-    open_capture = @capture_state.next_breadcrumb
+  def push_nested_captures(add_extra:)
+    open_capture = @capture_state.current_breadcrumb
+    @capture_state.advance
 
     if open_capture.full?
       # This is presumably a nontrivial capture that was converted to a "full" capture in code optimization or at runtime.
@@ -1596,24 +1608,78 @@ class ParsingMachine
       cpos = open_capture.subject_index
       match_len = open_capture.size - 1
       match_range = cpos...(cpos + match_len)
-      @capture_state << @subject[match_range]
+      @capture_state.push @subject[match_range]
       return 1
     end
 
     count = 0
-    count += extract_next_capture until @capture_state.peek.close? # Nested captures
+    count += push_capture until @capture_state.current_breadcrumb.close? # Nested captures
 
     # We have reached our matching close
-    close_capture = @capture_state.next_breadcrumb
+    close_capture = @capture_state.current_breadcrumb
+    @capture_state.advance
     if add_extra || count.zero?
-      # The close capture's subject index is actually the character _after_ the match ends, since that's where the associated
-      # matching attempt must have failed.
       match_range = (open_capture.subject_index)...(close_capture.subject_index)
-      @capture_state << @subject[match_range]
+      @capture_state.push @subject[match_range]
       count += 1
     end
 
     count
+  end
+
+  # This is LPEG's tablecap (lpcap.h)
+  #
+  # Instead of always producing a Hash, potentially with integer keys 0, 1, 2, ..., we produce an array when there are no named
+  # groups to worry about.
+  def push_table_capture
+    if @capture_state.current_breadcrumb.full?
+      # Empty table
+      @capture_state.push []
+      @capture_state.advance
+      return 1
+    end
+
+    @capture_state.advance # move past the open capture
+    named_results = {}
+    indexed_results = []
+    next_index = 0
+    until @capture_state.current_breadcrumb.close?
+      breadcrumb = @capture_state.current_breadcrumb
+      if breadcrumb.kind == Capture::GROUP && breadcrumb.value
+        # named group. We only keep track of the *first* value in the group
+        push_one_nested_value
+        value = @capture_state.pop
+        named_results[breadcrumb.value] = value
+      else
+        # not a named group
+        # k is the number we just got. We pop them back and put them in our result object
+        k = push_capture
+        (0..(k - 1)).to_a.reverse.each do |i|
+          indexed_results[next_index + i] = @capture_state.pop
+        end
+        next_index += k
+      end
+    end
+    @capture_state.advance # skip the close entry
+
+    if named_results.empty?
+      @capture_state.push indexed_results
+    else
+      indexed_results.each_with_index do |v, i|
+        named_results[i] = v
+      end
+      @capture_state.push named_results.merge
+    end
+    1 # we pushed just a single entry, the hash or array
+  end
+
+  # Push nested values and then pop off all but one
+  def push_one_nested_value
+    n = push_nested_captures(add_extra: false)
+    until n <= 1
+      @capture_state.pop
+      n -= 1
+    end
   end
 
   # q.v. LPEG's CaptureState, lpcap.h
@@ -1629,27 +1695,24 @@ class ParsingMachine
       @captures = []
     end
 
-    # Append a captured value
-    def <<(cap)
+    # push a captured value
+    def push(cap)
       @captures << cap
+    end
+
+    # Pop off the last value and return it
+    def pop
+      @captures.pop.must_be
     end
 
     def done?
       @breadcrumb_idx == @breadcrumbs.size
     end
 
-    # The current breadcrumb
-    def peek
+    def current_breadcrumb
       raise "No available breadcrumb" if done?
 
       @breadcrumbs[@breadcrumb_idx]
-    end
-
-    # Return the current breadcrumb and advance to the following one
-    def next_breadcrumb
-      result = peek
-      advance
-      result
     end
 
     def advance
@@ -1670,19 +1733,19 @@ class ParsingMachine
     # If we don't find it we raise an exception.
     #
     # This is LPEG's findback() (lpcap.c)
-    def seekbackref!(group_name)
+    def seek_back_ref!(group_name)
       while @breadcrumb_idx > 0
         @breadcrumb_idx -= 1
         # Skip nested captures
-        if peek.close?
-          seekopen!
+        if current_breadcrumb.close?
+          seek_matching_open!
         else
           # The opening of a capture that encloses the BACKREF. Skip it and keep going backwards
-          next unless peek.full?
+          next unless current_breadcrumb.full?
         end
         # We are at an open capture that was closed before our BACKREF
-        next unless peek.kind == Capture::GROUP # is it a group?
-        next unless peek.value == group_name # does it have the right name?
+        next unless current_breadcrumb.kind == Capture::GROUP # is it a group?
+        next unless current_breadcrumb.value == group_name # does it have the right name?
 
         # We found it!
         return
@@ -1693,35 +1756,38 @@ class ParsingMachine
     # This is LPEG's findopen (lpcap.c)
     #
     # Starting from a close capture (which we don't check) we go back to the matching open capture.
-    def seekopen!
-      n = 0 # number of closes waiting for an open
+    def seek_matching_open!
+      n = 0 # number of nested closes waiting for an open
       loop do
         @breadcrumb_idx -= 1
-        raise "subject index underflow in seekopen!" if @breadcrumb_idx < 0
+        raise "subject index underflow in seek_open!" if @breadcrumb_idx < 0
 
-        if peek.close?
+        if current_breadcrumb.close?
           n += 1
-        elsif peek.full?
+        elsif current_breadcrumb.full?
           next
         end
 
-        n -= 1
+        # It's a close
         return if n.zero?
+
+        n -= 1
       end
     end
 
     # This is LPEG's nextcap (lpcap.c)
     #
     # Move to the next capture
-    def seeknext!
-      unless peek.full?
-        n = 0 # number of opens waiting for a close
+    def seek_next!
+      unless current_breadcrumb.full?
+        n = 0 # number of nested opens waiting for a close
         loop do
           @breadcrumb_idx += 1
-          if peek.close?
-            n -= 1
+          if current_breadcrumb.close?
             break if n.zero?
-          elsif !peek.full?
+
+            n -= 1
+          elsif !current_breadcrumb.full?
             n += 1
           end
         end

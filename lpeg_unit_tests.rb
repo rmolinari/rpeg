@@ -75,7 +75,9 @@ class TestsFromLpegCode < Test::Unit::TestCase
     # assert_equal "a..a.", m.match(m.Cs((+((+m.P"a")/"") * 1 + m.P(1)/".")^0), "aloal")
     # assert_equal "a..a.", m.match(m.Cs((- -m.P("a") * 1 + m.P(1)/".")^0), "aloal")
     # assert_equal "a..a.", m.match(m.Cs((-((-m.P"a")/"") * 1 + m.P(1)/".")^0), "aloal")
+  end
 
+  def test_look_behind
     # -- look-behind predicate
     assert_nil m.match(m.B('a'), 'a')
     assert_equal 1, m.match(1 * m.B('a'), 'a')
@@ -84,6 +86,35 @@ class TestsFromLpegCode < Test::Unit::TestCase
     assert_equal 0, m.match(-m.B(1), 'a')
     assert_nil m.match(m.B(250), 'a' * 250)
     assert_equal 250, m.match(250 * m.B(250), 'a' * 250)
+
+    # -- look-behind with an open call
+    assert_match_raises_error("pattern may not have fixed length", ->{ m.B(m.V('S1')) }, '')
+
+    # we don't enforce such a limit
+    # checkerr("too long to look behind", m.B, 260)
+
+    b = +letter * -m.B(letter) + -letter * m.B(letter)
+    x = m.Ct({ S: (b * m.Cp())**-1 * (1 * m.V(0) + m.P(true)) })
+    assert_equal [0, 2, 3, 6, 8, 9], m.match(x, 'ar cal  c')
+    assert_equal [1, 3, 4, 7], m.match(x, ' ar cal  ')
+    assert_equal [], m.match(x, '   ')
+    assert_equal [0, 6], m.match(x, 'aloalo')
+
+    assert_equal 0, m.match(b, "a")
+    assert_equal 1, m.match(1 * b, "a")
+    assert_nil m.B(1 - letter).match("")
+    assert_equal 0, (-m.B(letter)).match("")
+
+    # The second argument, 4, to m.B doesn't make sense. Perhaps in LPEG lua is just ignoring the second argument
+    # assert_equal 4, (4 * m.B(letter, 4)).match("aaaaaaaa")
+    assert_equal 4, (4 * m.B(letter)).match("aaaaaaaa")
+    assert_nil (4 * m.B(+letter * 5)).match("aaaaaaaa")
+    assert_equal 4, (4 * -m.B(+letter * 5)).match("aaaaaaaa")
+
+    #-- look-behind with grammars
+    assert_nil m.match('a' * m.B({ x: m.P(3) }), 'aaa')
+    assert_nil m.match('aa' * m.B({ x: m.P('aaa') }), 'aaaa')
+    assert_equal 3, m.match('aaa' * m.B({ x: m.P('aaa') }), 'aaaaa')
   end
 
   def test_word_constructs
@@ -331,7 +362,7 @@ class TestsFromLpegCode < Test::Unit::TestCase
     assert_equal ['a', 'b', 'c', 1, 2], p.match('abc')
   end
 
-  def test_back_references
+  def test_backref_captures
     assert_match_raises_error("back reference 'x' not found", m.Cb('x'), '')
     assert_match_raises_error("back reference 'b' not found", m.Cg(1, 'a') * m.Cb('b'), 'a')
 
@@ -343,6 +374,57 @@ class TestsFromLpegCode < Test::Unit::TestCase
       assert_equal subject[i - 1, 1], patt.match(subject)
     end
   end
+
+  def test_table_captures
+    # -- test for table captures
+    assert_equal [], m.match(m.Ct(letter**1), "alo")
+
+    t, n = m.match(m.Ct(m.C(letter)**1) * m.Cc("t"), "alo")
+    assert_equal "t", n
+    assert_equal "alo", t.join
+
+    t = m.match(m.Ct(m.C(m.C(letter)**1)), "alo")
+    assert_equal "alo;a;l;o", t.join(";")
+
+    t = m.match(m.Ct(m.C(m.C(letter)**1)), "alo")
+    assert_equal "alo;a;l;o", t.join(";")
+
+    t = m.match(m.Ct(m.Ct((m.Cp() * letter * m.Cp())**1)), "alo")
+    assert_equal "0;1;1;2;2;3", t[0].join(";")
+
+    assert_equal %w[alo a o], m.match(m.Ct(m.C(m.C(1) * 1 * m.C(1))), "alo")
+
+    p = m.Ct(m.Cg(m.Cc(10), "hi") * m.C(1)**0 * m.Cg(m.Cc(20), "ho"))
+    assert_equal ({"hi" => 10, "ho" => 20}), p.match('')
+    assert_equal ({"hi" => 10, "ho" => 20, 0 => 'a', 1 => 'b', 2 => 'c'}), p.match('abc')
+
+    # -- non-string group names
+    p = m.Ct(m.Cg(1, a_lambda) * m.Cg(1, 23.5) * m.Cg(1, Kernel))
+    assert_equal ({ a_lambda => 'a', 23.5 => 'b', Kernel => 'c'}), p.match('abcdefghij')
+
+    # -- a large table capture
+    #
+    big = 1_000
+    # big = 10_000 # Note: this is slow! About 800 ms
+    t = m.match(m.Ct(m.C('a')**0), "a" * big)
+    assert_equal big, t.size
+    assert_equal 'a', t.first
+    assert_equal 'a', t.last
+
+    p = m.Cg(m.C(1) * m.C(1), "k") * m.Ct(m.Cb("k"))
+    t = p.match("ab")
+    assert_equal %w[a b], t
+  end
+
+  # For isolating a failing test. Run with the -n flag to ruby.
+  # def test_onceler
+  #   p = m.Cg(m.C(1) * m.C(1), "k") * m.Ct(m.Cb("k"))
+  #   t = p.match("ab")
+  #   assert_equal %w[a b], t
+  # end
+
+  # Notes on possible targets for profiling
+  #  See "big" in test_table_captures
 
   # Helpers to make it easier to use the tests copied from the Lua code
   def m

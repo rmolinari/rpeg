@@ -188,38 +188,6 @@ assert(m.match(m.C(m.C(p * m.C(2)) * m.C(3)) / 0, "abcdefgh") == 7)
 a, b, c = m.match(p * (m.C(p * m.C(2)) * m.C(3) / 4) * p, "abcdefgh")
 assert(a == "a" and b == "efg" and c == "h")
 
--- test for table captures
-t = m.match(m.Ct(letter^1), "alo")
-checkeq(t, {})
-
-t, n = m.match(m.Ct(m.C(letter)^1) * m.Cc"t", "alo")
-assert(n == "t" and table.concat(t) == "alo")
-
-t = m.match(m.Ct(m.C(m.C(letter)^1)), "alo")
-assert(table.concat(t, ";") == "alo;a;l;o")
-
-t = m.match(m.Ct(m.C(m.C(letter)^1)), "alo")
-assert(table.concat(t, ";") == "alo;a;l;o")
-
-t = m.match(m.Ct(m.Ct((m.Cp() * letter * m.Cp())^1)), "alo")
-assert(table.concat(t[1], ";") == "1;2;2;3;3;4")
-
-t = m.match(m.Ct(m.C(m.C(1) * 1 * m.C(1))), "alo")
-checkeq(t, {"alo", "a", "o"})
-
-
-p = m.Ct(m.Cg(m.Cc(10), "hi") * m.C(1)^0 * m.Cg(m.Cc(20), "ho"))
-t = p:match''
-checkeq(t, {hi = 10, ho = 20})
-t = p:match'abc'
-checkeq(t, {hi = 10, ho = 20, 'a', 'b', 'c'})
-
--- non-string group names
-p = m.Ct(m.Cg(1, print) * m.Cg(1, 23.5) * m.Cg(1, io))
-t = p:match('abcdefghij')
-assert(t[print] == 'a' and t[23.5] == 'b' and t[io] == 'c')
-
-
 -- test for error messages
 local function checkerr (msg, f, ...)
   local st, err = pcall(f, ...)
@@ -305,10 +273,6 @@ assert(p:match("abcaaaxx") == 7)
 assert(p:match("abcxx") == 6)
 
 
--- a large table capture
-t = m.match(m.Ct(m.C('a')^0), string.rep("a", 10000))
-assert(#t == 10000 and t[1] == 'a' and t[#t] == 'a')
-
 print('+')
 
 
@@ -372,34 +336,6 @@ assert(not m.match(-4, "\0\1\0a"))
 assert(m.match("\0\1\0a", "\0\1\0a") == 5)
 assert(m.match("\0\0\0", "\0\0\0") == 4)
 assert(not m.match("\0\0\0", "\0\0"))
-
-
-
--- look-behind with an open call
-checkerr("pattern may not have fixed length", m.B, m.V'S1')
-checkerr("too long to look behind", m.B, 260)
-
-B = #letter * -m.B(letter) + -letter * m.B(letter)
-x = m.Ct({ (B * m.Cp())^-1 * (1 * m.V(1) + m.P(true)) })
-checkeq(m.match(x, 'ar cal  c'), {1,3,4,7,9,10})
-checkeq(m.match(x, ' ar cal  '), {2,4,5,8})
-checkeq(m.match(x, '   '), {})
-checkeq(m.match(x, 'aloalo'), {1,7})
-
-assert(m.match(B, "a") == 1)
-assert(m.match(1 * B, "a") == 2)
-assert(not m.B(1 - letter):match(""))
-assert((-m.B(letter)):match("") == 1)
-
-assert((4 * m.B(letter, 4)):match("aaaaaaaa") == 5)
-assert(not (4 * m.B(#letter * 5)):match("aaaaaaaa"))
-assert((4 * -m.B(#letter * 5)):match("aaaaaaaa") == 5)
-
--- look-behind with grammars
-assert(m.match('a' * m.B{'x', x = m.P(3)},  'aaa') == nil)
-assert(m.match('aa' * m.B{'x', x = m.P('aaa')},  'aaaa') == nil)
-assert(m.match('aaa' * m.B{'x', x = m.P('aaa')},  'aaaaa') == 4)
-
 
 
 -- bug in 0.9
@@ -723,10 +659,6 @@ end
 
 print"+"
 
-
-p = m.Cg(m.C(1) * m.C(1), "k") * m.Ct(m.Cb("k"))
-t = p:match("ab")
-checkeq(t, {"a", "b"})
 
 t = {}
 function foo (p) t[#t + 1] = p; return p .. "x" end
