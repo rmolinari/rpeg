@@ -1469,6 +1469,9 @@ class ParsingMachine
   #      same.
   #
   # - extra_args is the list of extra arguments provided to #match. These are used for argument captures
+  #
+
+  # This method plays the same role as LPEG's getcaptures (lpcap.c)
   def captures
     raise "Cannot call #captures unless machine ran sucessfully" unless done? && success?
 
@@ -1477,34 +1480,38 @@ class ParsingMachine
     # set it aside in case we need it later. The capture methods will shift @breadcrumbs as they go
     @final_captures = @breadcrumbs.clone
 
-    @captures_to_return = [] # accumulate them here
+    # During capture analysis we actually need to go back and forth the @breadcrumbs array. For example, consider the work we need
+    # to do with named group captures (Cg) and associated backref captures (Cb). So can cannot simple shift/pop elements off
+    # @bredcrumbs. Instead, we keep track of where we are at the momment with this index.
+    @capture_state = CaptureState.new(@breadcrumbs)
 
-    extract_next_capture until @breadcrumbs.empty?
+    extract_next_capture until @capture_state.done?
 
-    @captures_to_return = @captures_to_return.first if @captures_to_return.size == 1
-    @captures_to_return
+    result = @capture_state.captures
+    result = result.first if result.size == 1
+    result
   end
 
   # Extract the next capture, returning the number of values obtained.
   private def extract_next_capture
-    capture = @breadcrumbs.first.must_be_a Capture::Breadcrumb
+    capture = @capture_state.peek
 
     case capture.kind
     when Capture::CONST
-      @captures_to_return << capture.value
-      @breadcrumbs.shift # consume it
+      @capture_state << capture.value
+      @capture_state.advance
       1
     when Capture::POSITION
-      @captures_to_return << capture.subject_index
-      @breadcrumbs.shift # consume it
+      @capture_state << capture.subject_index
+      @capture_state.advance
       1
     when Capture::ARGUMENT
       index = capture.value
       raise "Reference to absent extra argument ##{index}" if index > @extra_args.size
 
       # with an Argument Capture the extra arguments are indexed from 1
-      @captures_to_return << @extra_args[index - 1]
-      @breadcrumbs.shift # consume it
+      @capture_state << @extra_args[index - 1]
+      @capture_state.advance
       1
     when Capture::SIMPLE
       count = extract_nested_captures(add_extra: true)
@@ -1512,9 +1519,7 @@ class ParsingMachine
 
       # We need to make the whole match appear first in the list we just generated
       if count > 1
-        back_shift = count - 1
-        whole_match = @captures_to_return.pop
-        @captures_to_return[-back_shift...-back_shift] = whole_match
+        @capture_state.munge_last!(count)
       end
       count
     else
@@ -1532,13 +1537,11 @@ class ParsingMachine
   # ** so the function never returns zero.
   # */
   #
-  # The "current capture" is the first one in the given list.
-  #
-  # We append what we find to @captures_to_return and return their number.
+  # We append what we find to the capture state and return their number.
   #
   # Code is closely based on the LPEG code.
   def extract_nested_captures(add_extra:)
-    open_capture = @breadcrumbs.shift.must_be_a Capture::Breadcrumb
+    open_capture = @capture_state.next_breadcrumb
 
     if open_capture.full_capture?
       # This is presumably a nontrivial capture that was converted to a "full" capture in code optimization or at runtime.
@@ -1546,23 +1549,75 @@ class ParsingMachine
       cpos = open_capture.subject_index
       match_len = open_capture.size - 1
       match_range = cpos...(cpos + match_len)
-      @captures_to_return << @subject[match_range]
+      @capture_state << @subject[match_range]
       return 1
     end
 
     count = 0
-    count += extract_next_capture until @breadcrumbs.first.close? # Nested captures
+    count += extract_next_capture until @capture_state.peek.close? # Nested captures
 
     # We have reached our matching close
-    close_capture = @breadcrumbs.shift.must_be_a Capture::Breadcrumb
+    close_capture = @capture_state.next_breadcrumb
     if add_extra || count.zero?
       # The close capture's subject index is actually the character _after_ the match ends, since that's where the associated
       # matching attempt must have failed.
       match_range = (open_capture.subject_index)...(close_capture.subject_index)
-      @captures_to_return << @subject[match_range]
+      @capture_state << @subject[match_range]
       count += 1
     end
 
     count
   end
+
+  # q.v. LPEG's CaptureState, lpcap.h
+  #
+  # We'll also use this class for seeking operations like findnext findopen, etc.
+  class CaptureState
+    attr_reader :captures
+
+    def initialize(breadcrumbs)
+      @breadcrumbs = breadcrumbs
+      @next_breadcrumb_idx = 0
+
+      @captures = []
+    end
+
+    def done?
+      @next_breadcrumb_idx == @breadcrumbs.size
+    end
+
+    # The current breadcrumb
+    def peek
+      raise "No available breadcrumb" if done?
+
+      @breadcrumbs[@next_breadcrumb_idx]
+    end
+
+    # Return the current breadcrumb and advance to the following one
+    def next_breadcrumb
+      result = peek
+      advance
+      result
+    end
+
+    def advance
+      @next_breadcrumb_idx += 1
+    end
+
+    # Append a captured value
+    def <<(cap)
+      @captures << cap
+    end
+
+    # partially rotate the captures to make what is currently the final value the n-th from last value. For example, if @captures is
+    # currently [0, 1, 2, 3, 4], then calling munge_last(3) makes it [0, 1, 4, 2, 3]. Now 4 (previously the last value) is third
+    # from last. When n == 1 this is a no-op
+    def munge_last!(n)
+      return if n == 1
+      raise "Bad munge argument" unless n.positive?
+
+      @captures[-n...] = @captures[-n...].rotate(-1)
+    end
+  end
+
 end

@@ -3,6 +3,8 @@ require_relative 'pattern'
 
 require 'byebug'
 
+# These tests aren't very good or interesting. I wrote them to help get me up and running at the start of the project, but now the
+# interesting tests are in lpeg_unit_tests.rb, which contains tests lifted from LPEG's test.lua file
 class PatternTest < Test::Unit::TestCase
   def test_one_char_pattern
     patt = Pattern.S("abc")
