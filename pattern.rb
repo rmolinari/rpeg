@@ -375,11 +375,18 @@ class Pattern
   # Unary "and": pattern matches here (without consuming any input)
   #
   # Ierusalimschy points out that &patt can be implemented as --patt, but there is an optimization for the VM, so we preserve it
+  #
+  # NOTE: + isn't a great notation as it is easy to confuse for binary +. Unary - doesn't suffer as much because binary - is less
+  # common than binary +. But there doesn't seem to be a good alternative. According to https://stackoverflow.com/a/21060235/1299011
+  # the unary operators are !, ~, +, an -. We use - already and ! needs to be avoided because of idiomiatic Ruby checks like !foo
+  # for existance. Using ~ works, but that character is easy to mistake for a - when reading, which is bad. Ruby uses & as a unary
+  # (for to_proc) but the Ruby parser doesn't allow its use in general. So I think we're stuck with +.
   def +@
     Pattern.new(AND, self)
   end
 
-  # Difference is "this but not that". So p1 - p2 matches if p1 does and p2 doesn't
+  # Difference is "this but not that". So p1 - p2 matches if p1 does and p2 doesn't. Here, p2 doesn't consume any input but p1
+  # does. The pattern is equivalent to -p2 * p1.
   #
   # Special case: if both patterns are charsets we replace with a single charset
   def -(other)
