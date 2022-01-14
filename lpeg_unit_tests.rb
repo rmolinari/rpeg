@@ -446,6 +446,17 @@ class TestsFromLpegCode < Test::Unit::TestCase
     # assert_match_raises_error("no initial value", m.match, m.Cf(m.P(1) / {}, print), "alo")
   end
 
+  def test_numbered_captures
+    # -- tests for numbered captures
+    p = m.C(1)
+    assert_equal 'a', m.match(m.C(m.C(p * m.C(2)) * m.C(3)) / 3, "abcdefgh")
+    assert_equal 'abcdef', m.match(m.C(m.C(p * m.C(2)) * m.C(3)) / 1, "abcdefgh")
+    assert_equal 'bc', m.match(m.C(m.C(p * m.C(2)) * m.C(3)) / 4, "abcdefgh")
+    assert_equal 6, m.match(m.C(m.C(p * m.C(2)) * m.C(3)) / 0, "abcdefgh")
+
+    assert_equal %w[a efg h], m.match(p * (m.C(p * m.C(2)) * m.C(3) / 4) * p, "abcdefgh")
+  end
+
   # For isolating a failing test. Run with the -n flag to ruby.
   def test_onceler
   end

@@ -178,16 +178,6 @@ assert(m.match(m.Cs((m.P"1" / "a" + m.P"5" / "b" + m.P"9" / "c" + 1)^0), pi) ==
 print"+"
 
 
--- tests for numbered captures
-p = m.C(1)
-assert(m.match(m.C(m.C(p * m.C(2)) * m.C(3)) / 3, "abcdefgh") == "a")
-assert(m.match(m.C(m.C(p * m.C(2)) * m.C(3)) / 1, "abcdefgh") == "abcdef")
-assert(m.match(m.C(m.C(p * m.C(2)) * m.C(3)) / 4, "abcdefgh") == "bc")
-assert(m.match(m.C(m.C(p * m.C(2)) * m.C(3)) / 0, "abcdefgh") == 7)
-
-a, b, c = m.match(p * (m.C(p * m.C(2)) * m.C(3) / 4) * p, "abcdefgh")
-assert(a == "a" and b == "efg" and c == "h")
-
 -- test for error messages
 local function checkerr (msg, f, ...)
   local st, err = pcall(f, ...)

@@ -410,6 +410,22 @@ class Pattern
     -other * self
   end
 
+  # Replacement captures of various kinds
+  #
+  # From the LPEG docs:
+  #
+  #   patt / number
+  #
+  #     Creates a numbered capture. For a non-zero number, the captured value is the n-th value captured by patt. When number is
+  #     zero, there are no captured values.
+  def /(other)
+    case other
+    when Integer
+      raise "Cannot use negative number for numbered capture" if other.negative?
+      Pattern.new(CAPTURE, self, data: other, capture: Capture::NUM)
+    end
+  end
+
   private def fix_type(other)
     return other if other.is_a?(Pattern)
 
@@ -1189,7 +1205,7 @@ class Instruction
 end
 
 module Capture
-  KINDS = %i[const position argument simple group backref table fold close].each do |kind|
+  KINDS = %i[const position argument simple group backref table fold num close].each do |kind|
     const_set kind.upcase, kind
   end
 
@@ -1512,14 +1528,16 @@ class ParsingMachine
   def captures
     raise "Cannot call #captures unless machine ran sucessfully" unless done? && success?
 
-    return @subject_index if @breadcrumbs.empty?
-
     @capture_state = CaptureState.new(@breadcrumbs)
 
     push_capture until @capture_state.done?
 
     result = @capture_state.captures
-    result = result.first if result.size == 1
+    if result.size == 1
+      result = result.first
+    elsif result.empty?
+      result = @subject_index
+    end
     result
   end
 
@@ -1555,14 +1573,14 @@ class ParsingMachine
         @capture_state.seek_next!
         0
       else
-        push_nested_captures(add_extra: false)
+        push_nested_captures
       end
     when Capture::BACKREF
       group_name = breadcrumb.data
       breadcrumb_idx = @capture_state.index
 
       @capture_state.seek_back_ref!(group_name) # move to the named group capture
-      count = push_nested_captures(add_extra: false)
+      count = push_nested_captures
       # restore our location and step to the next one
       @capture_state.index = breadcrumb_idx
       @capture_state.advance
@@ -1572,6 +1590,8 @@ class ParsingMachine
       push_table_capture
     when Capture::FOLD
       push_fold_capture
+    when Capture::NUM
+      push_num_capture
     else
       raise "Unhandled capture kind #{capture.kind}"
     end
@@ -1590,7 +1610,7 @@ class ParsingMachine
   # We append what we find to the capture state and return their number.
   #
   # Code is closely based on the LPEG code.
-  def push_nested_captures(add_extra:)
+  def push_nested_captures(add_extra: false)
     open_capture = @capture_state.current_breadcrumb
     @capture_state.advance
 
@@ -1694,8 +1714,25 @@ class ParsingMachine
 
   # Push nested values and then pop off all but one
   def push_one_nested_value
-    n = push_nested_captures(add_extra: false)
+    n = push_nested_captures
     @capture_state.pop(n - 1)
+  end
+
+  # This is LPEG's numcap (lpcap.c)
+  def push_num_capture
+    idx = @capture_state.current_breadcrumb.data
+    if idx.zero?
+      # skip them all
+      @capture_state.seek_next!
+      return 0
+    end
+
+    n = push_nested_captures
+    raise "no capture '#{idx}" if n < idx
+
+    vals = @capture_state.pop(n) # pop them off
+    @capture_state.push vals[idx - 1] # push back the one we want
+    1
   end
 
   # q.v. LPEG's CaptureState, lpcap.h
