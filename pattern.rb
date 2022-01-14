@@ -18,15 +18,32 @@ require 'must_be'
 #   - +patt doesnt' read well, even though -patt does. I think this is because binary plus is so much more common when buliding
 #     patterns than binary minus is.
 #     - I tried using the "&" operator by overriding #to_proc but the Ruby parser rejects the &patt expression.
-#     - I will look again at other options
+#     - There doesn't seem to be another workable option. According to https://stackoverflow.com/a/21060235/1299011 the unary
+#       operators are !, ~, +, and -. We use - already and ! needs to be avoided because of idiomiatic Ruby checks like !foo for
+#       existence. Operator ~ works, but that character is easy to mistake for a - when reading, which is bad. Ruby uses & as a
+#       unary (for to_proc) but the Ruby parser doesn't allow its use in general. So I think we're stuck with +.
+#
 # - repeating patterns still use exponentiation, but it now looks like patt**n rather than patt^n because of Ruby's syntax
 #   - so patt**n means
-#     - "n or more occurrences of patt" when n is non-negative
-#     - "up to -n occurrences of patt" when n is negative
-#       - in particular, patt**-1 is like (patt)? in regular expressions
-# - grammars are represented by hashes. LPEG uses Lua tables
-#   - the first pair in the hash gives the initial nonterminal
-#   - TODO: support a key of :initial to say which one is the first
+#
+# - grammars are represented by hashes or arrays. LPEG uses Lua tables (which are a mashup of hashtables and arrays)
+#
+#   If an array then the nonterminals aren't named and all open calls must use numeric indices. The first element of the array is
+#   either
+#   - a non-negative integer 0, 1, 2, ... and specifies the (rule of the) initial nonterminal among the remaining elements with
+#     indices reckoned _without_ that initial integer
+#   - something else, which is interpreted as the pattern for the initial nonterminal
+#
+#   Otherwise the grammar is defined with a Hash. The keys are the nonterminal symbols and the values are the rule patterns.
+#   - the keys must be symbols or strings (which are converted to symbols). No rule can use :initial or "initial" as
+#     nonterminal.
+#   - the open calls can refer either to the nonterminals (as strings or symbols) or to rule indices as they appear in the hash,
+#     ignoring the :initial key (if present)
+#   - :initial/"initial" can appear as a key in the hash to specify the initial nonterminal.
+#     - if it is a non-zero integer it gives the index of the initial terminal's rule, reckoned without the presence of the :initial
+#       key itself.
+#     - if it is a symbol or a string it specifies the initial nonterminal directly
+#
 # - "Table" captures return a Hash if there are named captures to represent, and an array otherwise (though this may change). But we
 #   continue to call them "table" captures even though there is no Table class in Ruby.
 #   - Changing the name to "Hash" captures implies an implementation that may not be accurate.
@@ -38,13 +55,9 @@ require 'must_be'
 # - program generation optimations
 #   - LPEG's "keyhole" optimizations
 #   - other pattern-based optimizations: need to scan through the LPEG code again
-# - try & notation for AND patterns rather than unary plus
+#   - profiling
 # - break this file into smaller parts
 # - port LPEG's re module
-# - GRAMMAR
-#   - allow an :initial key in the hash to specify the initial non-terminal
-#     - think carefully about how integer references in open calls will be handled
-#   - allow specification in an array in which all rules are anonymous and referenced by open calls to their indices
 class Pattern
   NODE_TYPES = %i[
     charset string any seq ordered_choice repeated not and
@@ -99,7 +112,7 @@ class Pattern
         new(NFALSE)
       when TrueClass
         new(NTRUE)
-      when Hash
+      when Hash, Array
         new(GRAMMAR, data: arg)
       else
         raise "Pattern.P does not support argument #{arg}"
@@ -375,12 +388,6 @@ class Pattern
   # Unary "and": pattern matches here (without consuming any input)
   #
   # Ierusalimschy points out that &patt can be implemented as --patt, but there is an optimization for the VM, so we preserve it
-  #
-  # NOTE: + isn't a great notation as it is easy to confuse for binary +. Unary - doesn't suffer as much because binary - is less
-  # common than binary +. But there doesn't seem to be a good alternative. According to https://stackoverflow.com/a/21060235/1299011
-  # the unary operators are !, ~, +, an -. We use - already and ! needs to be avoided because of idiomiatic Ruby checks like !foo
-  # for existance. Using ~ works, but that character is easy to mistake for a - when reading, which is bad. Ruby uses & as a unary
-  # (for to_proc) but the Ruby parser doesn't allow its use in general. So I think we're stuck with +.
   def +@
     Pattern.new(AND, self)
   end
@@ -456,7 +463,7 @@ class Pattern
     when NTRUE
       result << "TRUE"
     when NFALSE
-      reasult << "FALSE"
+      result << "FALSE"
     when OPEN_CALL
       result << "OpenCall: #{data}"
     when CALL
@@ -627,7 +634,7 @@ class Pattern
         full_rule_code += rule_pattern.program + [Instruction.new(i::RETURN)]
       end
 
-      prog << Instruction.new(i::CALL, offset: @nonterminal_by_index[0]) # call the first nonterminal
+      prog << Instruction.new(i::CALL, offset: data) # call the nonterminal, in @data by fix_up_grammar
       prog << Instruction.new(i::JUMP, offset: 1 + full_rule_code.size) # we are done: jump to the line after the grammar's program
       prog += full_rule_code
 
@@ -673,12 +680,10 @@ class Pattern
     @data = data
     @capture = capture
     sanity_check
+    return unless type == GRAMMAR
 
-    if type == GRAMMAR
-      fix_up_grammar
-
-      Analysis.verify_grammar(self)
-    end
+    fix_up_grammar
+    Analysis.verify_grammar(self)
   end
 
   # Special operation when closing open calls
@@ -706,7 +711,7 @@ class Pattern
     when NTRUE, NFALSE
       data.must_be nil
     when GRAMMAR
-      data.must_be_a(Hash)
+      data.must_be_a(Hash, Array)
       data.must_not.empty?
     when OPEN_CALL
       data.must_not.negative? if left.is_a?(Integer)
@@ -735,10 +740,13 @@ class Pattern
     end
   end
 
+  # The grammar is currently in @data. It can be either a Hash or an Array
+  #
   # We do several things
   # - make sure each rule pattern is actually a pattern.
   #   - since we can specify rules as strings, say, or subgrammars (as hash) we need to step in here
-  # - the hash table of rules is replaced with an array of RULEs
+  # - the hash/array in @data is replaced with an array of RULE patterns in @left
+  # - the initial nonterminal (a symbol) is put into @data
   # - :opencall(v) nodes are replaced with CALL(rule) nodes
   #
   # We set up
@@ -750,8 +758,41 @@ class Pattern
     @nonterminal_indices = {}
     @nonterminal_by_index = []
 
-    grammar_hash = data.transform_values!{ Pattern.P(_1) }
-    grammar_hash.transform_keys! { |key| key.is_a?(String) ? key.to_sym : key }
+    if data.is_a?(Array)
+      # We replace it with an equivalent Hash
+      initial_nonterminal = nil
+      if data.first.is_a?(Integer)
+        initial_rule_idx = data.shift # discard the Integer
+        raise "Bad index for initial nonterminal in grammar" if initial_rule_idx.negative?
+      else
+        initial_rule_idx = 0
+      end
+      # Convert to a hash with sythentic keys
+      as_hash = {}
+      data.each_with_index do |p, i|
+        key = "__#{i}".to_sym
+        as_hash[key] = p
+        initial_nonterminal = key if i == initial_rule_idx
+      end
+      raise "Bad grammar: no rule correspnds to an index of #{initial_rule_dix} for initial nonterminal" unless initial_nonterminal
+
+      as_hash[:initial] = initial_nonterminal
+      @data = as_hash
+    end
+
+    # Canonical representations of keys (symbols) and values (patterns)
+    grammar_hash = {}
+    data.each do |nonterminal, pattern|
+      nonterminal = nonterminal.to_sym if nonterminal.is_a?(String)
+      raise "Nonterminal symbol can be only a string or a symbol" unless nonterminal.is_a?(Symbol)
+
+      next if nonterminal == :initial # the only case in which we don't specify a rule pattern
+
+      grammar_hash[nonterminal] = Pattern.P(pattern)
+    end
+
+    initial_symbol = grammar_hash.delete(:initial)
+    initial_symbol ||= grammar_hash.keys.first
 
     rule_hash = {}
     rule_list = []
@@ -768,7 +809,7 @@ class Pattern
     end
 
     @left = rule_list
-    @data = nil # we don't need the Hash any more
+    @data = initial_symbol.must_be # we don't need the Hash any more
 
     # Traverse a rule rules and fix open calls. Do it in-line so we don't risk traversing the tree(s) via a generic visitor while
     # modifying the tree
@@ -1084,7 +1125,7 @@ class Pattern
     end
   end
 
-  [::String, ::TrueClass, ::FalseClass, ::Hash].each do |klass|
+  [::String, ::TrueClass, ::FalseClass, ::Hash, ::Array].each do |klass|
     klass.class_eval do
       prepend NonNumericOverloadExtension
     end

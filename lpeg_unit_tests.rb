@@ -131,7 +131,7 @@ class TestsFromLpegCode < Test::Unit::TestCase
     assert_nil m.match(digit**0 * letter * eos, "1257a1")
 
     # Note we use index 0 rather than 1 because Lua is 1-based
-    b = { A: "(" * (((1 - m.S("()")) + +m.P("(") * m.V(0))**0) * ")" }
+    b = [ "(" * (((1 - m.S("()")) + +m.P("(") * m.V(0))**0) * ")" ]
 
     assert m.match(b, "(al())()")
     assert_nil m.match(b * eos, "(al())()")
@@ -159,8 +159,8 @@ class TestsFromLpegCode < Test::Unit::TestCase
     isnullable(+ -m.P("ab")**1)
     isnullable(+m.V(3))
     isnullable(m.V(3) + m.V(1) + m.P('a')**-1)
-    isnullable({ S: m.V(1) * m.V(2), T: m.V(2), U: m.P(0) })
-    assert_equal 2, m.match(m.P({ S: m.V(1) * m.V(2), T: m.V(2), U: m.P(1) })**0, "abc")
+    isnullable([m.V(1) * m.V(2), m.V(2), m.P(0)])
+    assert_equal 2, m.match(m.P([0, m.V(1) * m.V(2), m.V(2), m.P(1)])**0, "abc")
     assert_equal 0, m.match(m.P("")**-3, "a")
   end
 
@@ -171,16 +171,17 @@ class TestsFromLpegCode < Test::Unit::TestCase
       assert_raise_message(expected_pattern) { m.P(grammar) }
     end
 
-    bad_grammar.call({ S: m.V(0) }, "rule 'S'")
-    bad_grammar.call({ S: m.V(1) }, "rule '1'")   # invalid non-terminal
-    bad_grammar.call({ S: m.V("x") }, "rule 'x'")   # invalid non-terminal
+    # Some of these have been converted to use array notation for grammars
+    bad_grammar.call([ m.V(0) ], "may be left-recursive")
+    bad_grammar.call([ m.V(1) ], "rule '1'")   # invalid non-terminal
+    bad_grammar.call([ m.V("x") ], "rule 'x'")   # invalid non-terminal
     bad_grammar.call({ S: m.V({}) }, "rule '{}'")   # invalid non-terminal
     bad_grammar.call({ S: +m.P("a") * m.V(0) }, "rule 'S'")  # left-recursive
     bad_grammar.call({ S: -m.P("a") * m.V(0) }, "rule 'S'")  # left-recursive
     bad_grammar.call({ S: -1 * m.V(0) }, "rule 'S'")  # left-recursive
     bad_grammar.call({ S: -1 + m.V(0) }, "rule 'S'")  # left-recursive
     bad_grammar.call({ S: 1 * m.V(1), T: m.V(1) }, "rule 'T'") # left-recursive
-    bad_grammar.call({ S: 1 * m.V(1)**0, T: m.P(0) }, "rule 'S'") # inf. loop
+    bad_grammar.call([ 1 * m.V(1)**0, m.P(0) ], "rule '__0'") # inf. loop
     bad_grammar.call({ S: m.V(1), T: m.V(2)**0, U: m.P("") }, "rule 'T'") # inf. loop
     bad_grammar.call({ S: m.V(1) * m.V(2)**0, T: m.V(2)**0, U: m.P("") }, "rule 'S'") # inf. loop
     bad_grammar.call({ S: +(m.V(0) * 'a') }, "rule 'S'") # inf. loop
@@ -265,7 +266,7 @@ class TestsFromLpegCode < Test::Unit::TestCase
     assert_equal %w[abcd l], m.match(m.C(digit**1 * m.Cc("d")) + m.C(letter**1 * m.Cc("l")), "abcd")
 
     # $do_it = true
-    assert_equal ["abc", "a", "bc", "b", "c", "c", ""], m.match({ S: m.C(m.C(1) * m.V(0) + -1) }, "abc")
+    assert_equal ["abc", "a", "bc", "b", "c", "c", ""], m.match([m.C(m.C(1) * m.V(0) + -1)], "abc")
 
     # -- bug in 0.12 ('hascapture' did not check for captures inside a rule)
     #
