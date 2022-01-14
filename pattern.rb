@@ -173,6 +173,26 @@ class Pattern
 
     # From LPEG docs:
     #
+    #  Creates a fold capture. If patt produces a list of captures C1 C2 ... Cn, this capture will produce the value
+    #  func(...func(func(C1, C2), C3)..., Cn), that is, it will fold (or accumulate, or reduce) the captures from patt using
+    #  function func.
+    #
+    # The second argument should be a lambda taking two arguments and returning one in the standard way.
+    #
+    # The first nested capture is examined. If there isn't one or it captures no values there is an error. If this capture contains
+    # more than one value all but the first are discarded. This is the initial value for the fold. Then we extract the remaining
+    # nested captures and use their values C2, ..., Cn in the fold as described.
+    #
+    # If Ci (i >= 2) produces k values then the lambda will receive k+1 arguments: the accumulator and the k captured values.
+    # an array.
+    def Cf(pattern, lambda)
+      raise "Fold capture must have an accumulation lambda" unless lambda
+
+      Pattern.new(CAPTURE, P(pattern), data: lambda, capture: Capture::FOLD)
+    end
+
+    # From LPEG docs:
+    #
     #   Creates a group capture. It groups all values returned by patt into a single capture. The group may be anonymous (if no name
     #   is given) or named with the given name (which can be any non-nil Lua value).
     #
@@ -1129,7 +1149,7 @@ class Instruction
 end
 
 module Capture
-  KINDS = %i[const position argument simple group backref table close].each do |kind|
+  KINDS = %i[const position argument simple group backref table fold close].each do |kind|
     const_set kind.upcase, kind
   end
 
@@ -1580,6 +1600,8 @@ class ParsingMachine
       count
     when Capture::TABLE
       push_table_capture
+    when Capture::FOLD
+      push_fold_capture
     else
       raise "Unhandled capture kind #{capture.kind}"
     end
@@ -1673,6 +1695,32 @@ class ParsingMachine
     1 # we pushed just a single entry, the hash or array
   end
 
+  # This is LPEG's foldcap (lpcap.c)
+  def push_fold_capture
+    fn = @capture_state.current_breadcrumb.value.must_be
+
+    if @capture_state.current_breadcrumb.full? ||
+       (@capture_state.advance; @capture_state.current_breadcrumb.close?) ||
+       (n = push_capture).zero?
+      raise "no initial value for fold capture"
+    end
+
+    # discard all but one capture. This is the first value for the fold accumulator
+    while n > 1
+      @capture_state.pop
+      n -= 1
+    end
+
+    acc = @capture_state.pop
+    until @capture_state.current_breadcrumb.close?
+      n = push_capture
+      acc = fn.call(acc, *@capture_state.pop(n))
+    end
+    @capture_state.advance # skip close
+    @capture_state.push acc
+    1
+  end
+
   # Push nested values and then pop off all but one
   def push_one_nested_value
     n = push_nested_captures(add_extra: false)
@@ -1700,9 +1748,18 @@ class ParsingMachine
       @captures << cap
     end
 
-    # Pop off the last value and return it
-    def pop
-      @captures.pop.must_be
+    # Pop off the last value(s) and return it
+    #
+    # If the argument is something other than 1 we we pop off the last n terms as a unit (not one by one) and return an array.
+    def pop(num = 1)
+      if num == 1
+        @captures.pop.must_be
+      else
+        if num > @captures.size
+          "There are not #{num} captures to pop"
+        end
+        @captures.pop(num)
+      end
     end
 
     def done?

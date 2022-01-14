@@ -416,12 +416,38 @@ class TestsFromLpegCode < Test::Unit::TestCase
     assert_equal %w[a b], t
   end
 
+  def test_fold_captures
+    # -- accumulator capture
+    f = ->(x, _) { x + 1 }
+    g = ->(x, y) { x * y.length * 2 }
+    assert_equal 7, m.match(m.Cf(m.Cc(0) * m.C(1)**0, f), "alo alo")
+    assert_equal 128, m.match(m.Cf(m.Cc(1) * m.C(1)**0, g), "alo alo")
+
+    # Test that we get only the first term of the first capture, and when there are no other captures that the accumulator is not
+    # called.
+    f = ->(_, _) { raise :bogus }
+    assert_equal 1, m.match(m.Cf(m.Cc(1, 2, 3), f), "")
+
+    # the equivalent of Lua's rawset, I think.
+    f = ->(h, x, y) { h[x] = y; h }
+    p = m.Cf(m.Cc({}) * m.Cg(m.C(m.R("az")**1) * "=" * m.C(m.R("az")**1) * ";")**0, f)
+    assert_equal ({ "a" => "b", "c" => "du", "xux" => "yuy"}), p.match("a=b;c=du;xux=yuy;")
+
+    # -- errors in accumulator capture
+
+    # -- no initial capture
+    assert_match_raises_error("no initial value", m.Cf(m.P(5), a_lambda), 'aaaaaa')
+    # -- no initial capture (very long match forces fold to be a pair open-close)
+    assert_match_raises_error("no initial value", m.Cf(m.P(500), a_lambda), 'a' * 600)
+
+    # TODO uncomment when we have /-captures
+    # -- nested capture produces no initial value
+    # assert_match_raises_error("no initial value", m.match, m.Cf(m.P(1) / {}, print), "alo")
+  end
+
   # For isolating a failing test. Run with the -n flag to ruby.
-  # def test_onceler
-  #   p = m.Cg(m.C(1) * m.C(1), "k") * m.Ct(m.Cb("k"))
-  #   t = p.match("ab")
-  #   assert_equal %w[a b], t
-  # end
+  def test_onceler
+  end
 
   # Notes on possible targets for profiling
   #  See "big" in test_table_captures

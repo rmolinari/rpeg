@@ -573,28 +573,6 @@ assert(p:match(s) == string.rep('c', l) ..
 
 print"+"
 
--- accumulator capture
-function f (x) return x + 1 end
-assert(m.match(m.Cf(m.Cc(0) * m.C(1)^0, f), "alo alo") == 7)
-
-t = {m.match(m.Cf(m.Cc(1,2,3), error), "")}
-checkeq(t, {1})
-p = m.Cf(m.Ct(true) * m.Cg(m.C(m.R"az"^1) * "=" * m.C(m.R"az"^1) * ";")^0,
-         rawset)
-t = p:match("a=b;c=du;xux=yuy;")
-checkeq(t, {a="b", c="du", xux="yuy"})
-
-
--- errors in accumulator capture
-
--- no initial capture
-checkerr("no initial value", m.match, m.Cf(m.P(5), print), 'aaaaaa')
--- no initial capture (very long match forces fold to be a pair open-close)
-checkerr("no initial value", m.match, m.Cf(m.P(500), print),
-                               string.rep('a', 600))
-
--- nested capture produces no initial value
-checkerr("no initial value", m.match, m.Cf(m.P(1) / {}, print), "alo")
 
 
 -- tests for loop checker
