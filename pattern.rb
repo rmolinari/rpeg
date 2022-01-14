@@ -15,6 +15,10 @@ require 'must_be'
 # - and patterns in LPEG are #patt (&patt in the first version) but +patt here
 #   - unary & apparently can't be overloaded in Ruby
 #   - this pattern matches when patt appears at the current location, but it doesn't consume any of the input
+#   - +patt doesnt' read well, even though -patt does. I think this is because binary plus is so much more common when buliding
+#     patterns than binary minus is.
+#     - I tried using the "&" operator by overriding #to_proc but the Ruby parser rejects the &patt expression.
+#     - I will look again at other options
 # - repeating patterns still use exponentiation, but it now looks like patt**n rather than patt^n because of Ruby's syntax
 #   - so patt**n means
 #     - "n or more occurrences of patt" when n is non-negative
@@ -371,9 +375,6 @@ class Pattern
   # Unary "and": pattern matches here (without consuming any input)
   #
   # Ierusalimschy points out that &patt can be implemented as --patt, but there is an optimization for the VM, so we preserve it
-  #
-  # TODO: see if we can change this to use & by overloading #to_proc. In practice, unary plus is harder to read in a large
-  #   expression than unary minus, perhaps because binary + is much more common than binary -.
   def +@
     Pattern.new(AND, self)
   end
