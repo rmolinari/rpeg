@@ -457,6 +457,40 @@ class TestsFromLpegCode < Test::Unit::TestCase
     assert_equal %w[a efg h], m.match(p * (m.C(p * m.C(2)) * m.C(3) / 4) * p, "abcdefgh")
   end
 
+  def test_function_replacements
+    # -- tests for Function Replacements
+    #
+    # f = function (a, ...) if a ~= "x" then return {a, ...} end end
+    #
+    # Issue: Lua distinguishes between returning multiple values,
+    #
+    #    return x, y
+    #
+    # and returning a single table containing multiple values,
+    #
+    #    return {x, y}
+    #
+    # The intention of the Lua tests is to wrap the arguments in a table, returning a single value. I think this means we need to do
+    # a "double wrap" of the value. The code in push_function_replacement will count the results and get 1, as desired.
+    f = lambda do |a, *rest|
+      [[a, *rest]] if a != "x"
+    end
+
+    assert_equal %w[a b c], m.match(m.C(1)**0/f, "abc")
+    assert_equal [%w[a b c]], m.match(m.C(1)**0/f/f, "abc")
+    assert_equal [["abc"]], m.match(m.P(1)**0/f/f, "abc")  #-- no capture
+    assert_equal [["abc"], 3], m.match((m.P(1)**0/f * m.Cp()) / f, "abc")
+    assert_equal [["a", "b", "c"], 3],  m.match((m.C(1)**0/f * m.Cp())/f, "abc")
+    assert_equal [3], m.match((m.C(1)**0/f * m.Cp())/f, "xbc")
+    assert_equal %w[abc a b c], m.match(m.C(m.C(1)**0)/f, "abc")
+
+    g = ->(*a) { [1, *a] }
+    assert_equal [1, 1, "a", "b", "c"], m.match(m.C(1)**0/g/g, "abc")
+    assert_equal [1, 1, nil, nil, 4, nil, 3, nil, nil], m.match(m.Cc(nil,nil,4) * m.Cc(nil,3) * m.Cc(nil, nil) / g / g, "")
+
+    assert_equal ["a", "ax", "b", "bx", "c", "cx"], m.match((m.C(1) / ->(x) { [x, x + "x"] })**0, "abc")
+  end
+
   # For isolating a failing test. Run with the -n flag to ruby.
   def test_onceler
   end

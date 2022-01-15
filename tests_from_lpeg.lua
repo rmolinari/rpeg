@@ -460,45 +460,6 @@ p = (m.P(function (s, i) return i%2 == 0 and i end) * 1
   * -1
 assert(p:match(string.rep('a', 14000)))
 
--- tests for Function Replacements
-f = function (a, ...) if a ~= "x" then return {a, ...} end end
-
-t = m.match(m.C(1)^0/f, "abc")
-checkeq(t, {"a", "b", "c"})
-
-t = m.match(m.C(1)^0/f/f, "abc")
-checkeq(t, {{"a", "b", "c"}})
-
-t = m.match(m.P(1)^0/f/f, "abc")   -- no capture
-checkeq(t, {{"abc"}})
-
-t = m.match((m.P(1)^0/f * m.Cp())/f, "abc")
-checkeq(t, {{"abc"}, 4})
-
-t = m.match((m.C(1)^0/f * m.Cp())/f, "abc")
-checkeq(t, {{"a", "b", "c"}, 4})
-
-t = m.match((m.C(1)^0/f * m.Cp())/f, "xbc")
-checkeq(t, {4})
-
-t = m.match(m.C(m.C(1)^0)/f, "abc")
-checkeq(t, {"abc", "a", "b", "c"})
-
-g = function (...) return 1, ... end
-t = {m.match(m.C(1)^0/g/g, "abc")}
-checkeq(t, {1, 1, "a", "b", "c"})
-
-t = {m.match(m.Cc(nil,nil,4) * m.Cc(nil,3) * m.Cc(nil, nil) / g / g, "")}
-t1 = {1,1,nil,nil,4,nil,3,nil,nil}
-for i=1,10 do assert(t[i] == t1[i]) end
-
-
-t = {m.match((m.C(1) / function (x) return x, x.."x" end)^0, "abc")}
-checkeq(t, {"a", "ax", "b", "bx", "c", "cx"})
-
-t = m.match(m.Ct((m.C(1) / function (x,y) return y, x end * m.Cc(1))^0), "abc")
-checkeq(t, {nil, "a", 1, nil, "b", 1, nil, "c", 1})
-
 -- tests for Query Replacements
 
 assert(m.match(m.C(m.C(1)^0)/{abc = 10}, "abc") == 10)

@@ -422,7 +422,12 @@ class Pattern
     case other
     when Integer
       raise "Cannot use negative number for numbered capture" if other.negative?
+
       Pattern.new(CAPTURE, self, data: other, capture: Capture::NUM)
+    when Proc
+      Pattern.new(CAPTURE, self, data: other, capture: Capture::FUNCTION)
+    else
+      raise "Replacement capture is not supported for #{other}"
     end
   end
 
@@ -1205,7 +1210,7 @@ class Instruction
 end
 
 module Capture
-  KINDS = %i[const position argument simple group backref table fold num close].each do |kind|
+  KINDS = %i[const position argument simple group backref table fold num function close].each do |kind|
     const_set kind.upcase, kind
   end
 
@@ -1592,6 +1597,8 @@ class ParsingMachine
       push_fold_capture
     when Capture::NUM
       push_num_capture
+    when Capture::FUNCTION
+      push_function_replacement
     else
       raise "Unhandled capture kind #{capture.kind}"
     end
@@ -1615,8 +1622,6 @@ class ParsingMachine
     @capture_state.advance
 
     if open_capture.full?
-      # This is presumably a nontrivial capture that was converted to a "full" capture in code optimization or at runtime.
-      # We don't do such optimziations yet but might.
       cpos = open_capture.subject_index
       match_len = open_capture.size - 1
       match_range = cpos...(cpos + match_len)
@@ -1735,6 +1740,17 @@ class ParsingMachine
     1
   end
 
+  # This is LPEG's functioncap (lpcap.c)
+  def push_function_replacement
+    proc = @capture_state.current_breadcrumb.data.must_be_a(Proc) # get the proc to call
+    n = push_nested_captures # get the nested captures...
+    args = @capture_state.pop(n) # ...pop them
+    result = Array(proc.call(*args)) # ... and pass them to the proc
+    num = result.size
+    result.each { |cap| @capture_state.push cap } # the results, if any, are the capture values
+    num
+  end
+
   # q.v. LPEG's CaptureState, lpcap.h
   #
   # We'll also use this class for seeking operations like findnext findopen, etc.
@@ -1755,11 +1771,18 @@ class ParsingMachine
     # Pop the top capture off and return it, erroring if there isn't one.
     #
     # If the argument is given we pop off the last n captures as a chunk (not one by one) and return them in an array.
+    #
+    # nil might be in the stack, so we need to count rather than simply check pop for truthiness
     def pop(num = nil)
-      return @captures.pop.must_be unless num
-      raise "There are not #{num} captures to pop" if num > @captures.size
+      if num
+        raise "There are not #{num} captures to pop" if num > @captures.size
 
-      @captures.pop(num)
+        @captures.pop(num)
+      else
+        raise "There is not a capture to pop" unless @captures.size > 0
+
+        @captures.pop
+      end
     end
 
     def done?
