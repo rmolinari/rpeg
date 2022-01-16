@@ -418,12 +418,28 @@ class Pattern
   #
   #     Creates a numbered capture. For a non-zero number, the captured value is the n-th value captured by patt. When number is
   #     zero, there are no captured values.
+  #
+  #   patt / table
+  #
+  #     Creates a query capture. It indexes the given table using as key the first value captured by patt, or the whole match if
+  #     patt produced no value. The value at that index is the final value of the capture. If the table does not have that key,
+  #     there is no captured value.
+  #
+  #   patt / function
+  #
+  #     Creates a function capture. It calls the given function passing all captures made by patt as arguments, or the whole match
+  #     if patt made no capture. The values returned by the function are the final values of the capture. In particular, if function
+  #     returns no value, there is no captured value.
+  #
+  # We create a query capture when a Hash is passed
   def /(other)
     case other
     when Integer
       raise "Cannot use negative number for numbered capture" if other.negative?
 
       Pattern.new(CAPTURE, self, data: other, capture: Capture::NUM)
+    when Hash
+      Pattern.new(CAPTURE, self, data: other, capture: Capture::QUERY)
     when Proc
       Pattern.new(CAPTURE, self, data: other, capture: Capture::FUNCTION)
     else
@@ -1210,7 +1226,7 @@ class Instruction
 end
 
 module Capture
-  KINDS = %i[const position argument simple group backref table fold num function close].each do |kind|
+  KINDS = %i[const position argument simple group backref table fold num query function close].each do |kind|
     const_set kind.upcase, kind
   end
 
@@ -1598,7 +1614,9 @@ class ParsingMachine
     when Capture::NUM
       push_num_capture
     when Capture::FUNCTION
-      push_function_replacement
+      push_function_capture
+    when Capture::QUERY
+      push_query_capture
     else
       raise "Unhandled capture kind #{capture.kind}"
     end
@@ -1741,7 +1759,7 @@ class ParsingMachine
   end
 
   # This is LPEG's functioncap (lpcap.c)
-  def push_function_replacement
+  def push_function_capture
     proc = @capture_state.current_breadcrumb.data.must_be_a(Proc) # get the proc to call
     n = push_nested_captures # get the nested captures...
     args = @capture_state.pop(n) # ...pop them
@@ -1749,6 +1767,20 @@ class ParsingMachine
     num = result.size
     result.each { |cap| @capture_state.push cap } # the results, if any, are the capture values
     num
+  end
+
+  # This is LPEG's querycap (lpcap.c)
+  def push_query_capture
+    hash = @capture_state.current_breadcrumb.data.must_be_a(Hash)
+    push_one_nested_value  # /* get nested capture */
+    query_key = @capture_state.pop # pop it
+    result = hash[query_key]
+    if result
+      @capture_state.push(result)
+      1
+    else
+      0 # no result
+    end
   end
 
   # q.v. LPEG's CaptureState, lpcap.h

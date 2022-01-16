@@ -462,25 +462,6 @@ assert(p:match(string.rep('a', 14000)))
 
 -- tests for Query Replacements
 
-assert(m.match(m.C(m.C(1)^0)/{abc = 10}, "abc") == 10)
-assert(m.match(m.C(1)^0/{a = 10}, "abc") == 10)
-assert(m.match(m.S("ba")^0/{ab = 40}, "abc") == 40)
-t = m.match(m.Ct((m.S("ba")/{a = 40})^0), "abc")
-checkeq(t, {40})
-
-assert(m.match(m.Cs((m.C(1)/{a=".", d=".."})^0), "abcdde") == ".bc....e")
-assert(m.match(m.Cs((m.C(1)/{f="."})^0), "abcdde") == "abcdde")
-assert(m.match(m.Cs((m.C(1)/{d="."})^0), "abcdde") == "abc..e")
-assert(m.match(m.Cs((m.C(1)/{e="."})^0), "abcdde") == "abcdd.")
-assert(m.match(m.Cs((m.C(1)/{e=".", f="+"})^0), "eefef") == "..+.+")
-assert(m.match(m.Cs((m.C(1))^0), "abcdde") == "abcdde")
-assert(m.match(m.Cs(m.C(m.C(1)^0)), "abcdde") == "abcdde")
-assert(m.match(1 * m.Cs(m.P(1)^0), "abcdde") == "bcdde")
-assert(m.match(m.Cs((m.C('0')/'x' + 1)^0), "abcdde") == "abcdde")
-assert(m.match(m.Cs((m.C('0')/'x' + 1)^0), "0ab0b0") == "xabxbx")
-assert(m.match(m.Cs((m.C('0')/'x' + m.P(1)/{b=3})^0), "b0a0b") == "3xax3")
-assert(m.match(m.P(1)/'%0%0'/{aa = -3} * 'x', 'ax') == -3)
-assert(m.match(m.C(1)/'%0%1'/{aa = 'z'}/{z = -3} * 'x', 'ax') == -3)
 
 assert(m.match(m.Cs(m.Cc(0) * (m.P(1)/"")), "4321") == "0")
 

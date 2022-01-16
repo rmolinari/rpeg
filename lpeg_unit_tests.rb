@@ -457,7 +457,7 @@ class TestsFromLpegCode < Test::Unit::TestCase
     assert_equal %w[a efg h], m.match(p * (m.C(p * m.C(2)) * m.C(3) / 4) * p, "abcdefgh")
   end
 
-  def test_function_replacements
+  def test_function_capturte
     # -- tests for Function Replacements
     #
     # f = function (a, ...) if a ~= "x" then return {a, ...} end end
@@ -491,6 +491,30 @@ class TestsFromLpegCode < Test::Unit::TestCase
     assert_equal ["a", "ax", "b", "bx", "c", "cx"], m.match((m.C(1) / ->(x) { [x, x + "x"] })**0, "abc")
   end
 
+  def test_query_capture
+    assert_equal 10, m.match(m.C(m.C(1)**0) / { "abc" => 10 }, "abc")
+    assert_equal 10, m.match(m.C(1)**0 / { "a" => 10 }, "abc")
+    assert_equal 40, m.match(m.S("ba")**0 / { "ab" => 40 }, "abc")
+    assert_equal [40], m.match(m.Ct((m.S("ba") / { "a" => 40 })**0), "abc")
+
+    # TODO: substitution captures
+    # assert_equal ".bc....e", m.match(m.Cs((m.C(1) / { "a" => ".", "d" => ".." })**0), "abcdde")
+    # assert_equal "abcdde", m.match(m.Cs((m.C(1) / { "f" => "." })**0), "abcdde")
+    # assert_equal "abc..e", m.match(m.Cs((m.C(1) / { "d" => "." })**0), "abcdde")
+    # assert_equal "abcdd.", m.match(m.Cs((m.C(1) / { "e" => "." })**0), "abcdde")
+    # assert_equal "..+.+", m.match(m.Cs((m.C(1) / { "e" => ".", "f" => "+" })**0), "eefef")
+    # assert_equal "abcdde", m.match(m.Cs((m.C(1))**0), "abcdde")
+    # assert_equal "abcdde", m.match(m.Cs(m.C(m.C(1)**0)), "abcdde")
+    # assert_equal "bcdde", m.match(1 * m.Cs(m.P(1)**0), "abcdde")
+
+    # TODO: These involve string captures. Uncomment when possible
+    # assert_equal "abcdde", m.match(m.Cs((m.C('0') / 'x' + 1)**0), "abcdde")
+    # assert_equal "xabxbx", m.match(m.Cs((m.C('0') / 'x' + 1)**0), "0ab0b0")
+    # assert_equal "3xax3", m.match(m.Cs((m.C('0') / 'x' + m.P(1) / { "b" => 3 })**0), "b0a0b")
+    # assert_equal (-3), m.match(m.P(1) / '%0%0' / { "aa" => -3 } * 'x', 'ax')
+    # assert_equal (-3), m.match(m.C(1) / '%0%1' / { "aa" => 'z' } / { "z" => -3 } * 'x', 'ax')
+  end
+
   # For isolating a failing test. Run with the -n flag to ruby.
   def test_onceler
   end
@@ -510,7 +534,6 @@ class TestsFromLpegCode < Test::Unit::TestCase
   end
 
   def isnullable(patt)
-    m.P(patt).nullable?
   end
 
   def a_lambda
