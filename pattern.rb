@@ -50,10 +50,8 @@ require 'must_be'
 #
 # TODO:
 # - Match-time captures, Cmt
-# - Substitution captures, Cs
-# - /-based captures
 # - program generation optimations
-#   - LPEG's "keyhole" optimizations
+#   - LPEG's "peephole" optimizations
 #   - other pattern-based optimizations: need to scan through the LPEG code again
 #   - profiling
 # - break this file into smaller parts
@@ -701,14 +699,12 @@ class Pattern
         raise "Nonterminal #{nonterminal} does not have a rule in grammar" unless start_line
 
         # We replaced OPEN_CALL with CALL earlier in #fix_up_grammar. But, if the following instruction is a :return this a tail
-        # call and we can eliminate the stack push by using a :jump instead of the call. This leaves the following :return a dead
-        # statement which we will never reach. We change it to a bogus op code as a sanity check: if the VM ever reaches it we have
-        # made an error somewhere.
+        # call and we can eliminate the stack push by using a :jump instead of the call. The following :return must remain, as we
+        # may reach there via another jump/commit/etc
         offset = start_line - idx
         if prog[idx + 1] && prog[idx + 1].op_code == :return
           prog[idx] = Instruction.new(i::JUMP, offset: offset)
-          prog[idx + 1] = Instruction.new(i::UNREACHABLE)
-        else
+       else
           prog[idx] = Instruction.new(i::CALL, offset: offset)
         end
       end
@@ -1342,6 +1338,7 @@ class ParsingMachine
   # at the end of the array when we analyse the breadcrumbs for capture returns.
   def run
     i = Instruction # shorthand
+
     loop do
       return if done?
 
@@ -1445,6 +1442,12 @@ class ParsingMachine
         raise "Unhandled op code #{instr.op_code}"
       end
     end
+  end
+
+  def program_to_s
+    @program_to_s ||= @program.each_with_index.map do |instr, i|
+      "#{i.to_s.rjust 3}: #{instr}"
+    end.join("\n")
   end
 
   # For this and the handling of the foo_CAPTURE op codes above, see the corresponding LPEG code in lpvm.c

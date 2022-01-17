@@ -74,21 +74,6 @@ local lower = m.S"abcdefghijklmnopqrstuvwxyz"
 local letter = m.S"" + upper + lower
 local alpha = letter + digit + m.R()
 
-eqcharset(m.S"", m.P(false))
-eqcharset(upper, m.R("AZ"))
-eqcharset(lower, m.R("az"))
-eqcharset(upper + lower, m.R("AZ", "az"))
-eqcharset(upper + lower, m.R("AZ", "cz", "aa", "bb", "90"))
-eqcharset(digit, m.S"01234567" + "8" + "9")
-eqcharset(upper, letter - lower)
-eqcharset(m.S(""), m.R())
-assert(cs2str(m.S("")) == "")
-
-eqcharset(m.S"\0", "\0")
-eqcharset(m.S"\1\0\2", m.R"\0\2")
-eqcharset(m.S"\1\0\2", m.R"\1\2" + "\0")
-eqcharset(m.S"\1\0\2" - "\0", m.R"\1\2")
-
 local word = alpha^1 * (1 - alpha)^0
 local eos = m.P(-1)
 
@@ -335,36 +320,6 @@ assert(not m.match(('a' * #m.P'b'), "a"))
 assert(not m.match(#m.S'567', ""))
 assert(m.match(#m.S'567' * 1, "6") == 2)
 
-
--- tests for Tail Calls
-
-p = m.P{ 'a' * m.V(1) + '' }
-assert(p:match(string.rep('a', 1000)) == 1001)
-
--- create a grammar for a simple DFA for even number of 0s and 1s
---
---  ->1 <---0---> 2
---    ^           ^
---    |           |
---    1           1
---    |           |
---    V           V
---    3 <---0---> 4
---
--- this grammar should keep no backtracking information
-
-p = m.P{
-  [1] = '0' * m.V(2) + '1' * m.V(3) + -1,
-  [2] = '0' * m.V(1) + '1' * m.V(4),
-  [3] = '0' * m.V(4) + '1' * m.V(1),
-  [4] = '0' * m.V(3) + '1' * m.V(2),
-}
-
-assert(p:match(string.rep("00", 10000)))
-assert(p:match(string.rep("01", 10000)))
-assert(p:match(string.rep("011", 10000)))
-assert(not p:match(string.rep("011", 10000) .. "1"))
-assert(not p:match(string.rep("011", 10001)))
 
 
 -- this grammar does need backtracking info.

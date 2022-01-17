@@ -560,8 +560,47 @@ class TestsFromLpegCode < Test::Unit::TestCase
                  m.match(m.Cs((m.P(1) / { "1" => "a", "5" => "b", "9" => "c" })**0), pi)
   end
 
+  def test_tail_calls
+    # -- tests for Tail Calls
+    p = m.P([ 'a' * m.V(0) + '' ])
+    assert_equal 1000, p.match('a' * 1000)
+
+    # -- create a grammar for a simple DFA for even number of 0s and 1s
+    # --
+    # --  ->1 <---0---> 2
+    # --    ^           ^
+    # --    |           |
+    # --    1           1
+    # --    |           |
+    # --    V           V
+    # --    3 <---0---> 4
+    # --
+    # -- this grammar should keep no backtracking information
+
+    p = m.P([
+              '0' * m.V(1) + '1' * m.V(2) + -1,
+              '0' * m.V(0) + '1' * m.V(3),
+              '0' * m.V(3) + '1' * m.V(0),
+              '0' * m.V(2) + '1' * m.V(1),
+            ])
+
+    assert p.match("00" * 10_000)
+    assert p.match("01" * 10_000)
+    assert p.match("011" * 10_000)
+    assert_nil p.match(("011" * 10_000) + "1")
+    assert_nil p.match("011" * 10_001)
+  end
+
   # For isolating a failing test. Run with the -n flag to ruby.
   def test_onceler
+    p = m.P([
+              '0' * m.V(1) + '1' * m.V(2) + -1,
+              '0' * m.V(0) + '1' * m.V(3),
+              '0' * m.V(3) + '1' * m.V(0),
+              '0' * m.V(2) + '1' * m.V(1),
+            ])
+
+    assert p.match("00" * 10_000)
   end
 
   # Notes on possible targets for profiling
