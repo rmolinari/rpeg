@@ -51,7 +51,6 @@ require 'must_be'
 # TODO:
 # - Match-time captures, Cmt
 # - program generation optimations
-#   - LPEG's "peephole" optimizations
 #   - other pattern-based optimizations: need to scan through the LPEG code again
 #   - profiling
 # - break this file into smaller parts
@@ -310,7 +309,9 @@ class Pattern
   # init: the string index to start at, defaulting to 0
   # extra_args: used by Argument Captures
   def match(str, init = 0, *extra_args)
-    machine = ParsingMachine.new(program + [Instruction.new(Instruction::OP_END)], str, init, extra_args)
+    prog = optimize_jumps(program + [Instruction.new(Instruction::OP_END)])
+
+    machine = ParsingMachine.new(prog, str, init, extra_args)
     machine.run
 
     return machine.captures if machine.success?
@@ -704,7 +705,7 @@ class Pattern
         offset = start_line - idx
         if prog[idx + 1] && prog[idx + 1].op_code == :return
           prog[idx] = Instruction.new(i::JUMP, offset: offset)
-       else
+        else
           prog[idx] = Instruction.new(i::CALL, offset: offset)
         end
       end
@@ -713,6 +714,81 @@ class Pattern
     end
 
     @program = prog.freeze
+  end
+
+  # LPEG's peephole (lpcode.c)
+  #
+  # /*
+  # ** Optimize jumps and other jump-like instructions.
+  # ** * Update labels of instructions with labels to their final
+  # ** destinations (e.g., choice L1; ... L1: jmp L2: becomes
+  # ** choice L2)
+  # ** * Jumps to other instructions that do jumps become those
+  # ** instructions (e.g., jump to return becomes a return; jump
+  # ** to commit becomes a commit)
+  # */
+  def optimize_jumps(program)
+    i = Instruction # shorthand
+
+    program.each_with_index do |instr, idx|
+      case instr.op_code
+      when i::CHOICE, i::CALL, i::COMMIT, i::PARTIAL_COMMIT, i::BACK_COMMIT
+        n_off = finallabel(program, idx) - idx
+        instr.offset = n_off
+      when i::JUMP
+        final_t = finaltarget(program, idx)
+        case program[final_t].op_code
+        when i::RETURN, i::FAIL, i::FAIL_TWICE, i::OP_END
+          # instructions with unconditional implicit jumps. The jump just becomes that instruction
+          program[idx] = program[final_t]
+        when i::COMMIT, i::PARTIAL_COMMIT, i::BACK_COMMIT
+          # instruction with unconditional explicit jumps
+          final_final_t = finallabel(program, final_t)
+          # The jump becomes that instruction...
+          instr = program[final_t].clone
+          # ... but must correct the offset
+          instr.offset = final_final_t - idx
+          program[idx] = instr
+          redo # "reoptimize the label"
+        else
+          # just optimize the label
+          program[idx].offset = final_t - idx
+        end
+      else
+        # nothing to do
+      end
+    end
+  end
+
+  # LPEG's target (lpcode.c)
+  #
+  # The absolute target of the instruction at index idx
+  def target(code, idx)
+    idx + code[idx].offset
+  end
+
+  # LPEG's finaltarget (lpcode.c)
+  #
+  # /*
+  # ** Find the final [absolute] destination of a sequence of jumps
+  # */
+  def finaltarget(program, idx)
+    byebug unless program[idx]
+    while program[idx].op_code == Instruction::JUMP
+      idx = target(program, idx)
+      byebug unless program[idx]
+    end
+    idx
+  end
+
+  # LPEG's finallabel (lpcode.c)
+  #
+  # /*
+  # ** final label (after traversing any jumps)
+  # */
+  def finallabel(program, idx)
+    byebug if target(program, idx) >= program.size
+    return finaltarget(program, target(program, idx));
   end
 
   ########################################
@@ -1202,7 +1278,8 @@ class Instruction
 
   OP_WIDTH = OP_CODES.map(&:length).max
 
-  attr_reader :op_code, :offset, :data, :aux
+  attr_reader :op_code, :data, :aux
+  attr_accessor :offset
 
   def initialize(op_code, offset: nil, data: nil, aux: nil)
     raise "Bad instruction op_code #{op_code}" unless OP_CODES.include?(op_code)
@@ -1542,7 +1619,6 @@ class ParsingMachine
   end
 
   private def check_frame(frame, expected_type)
-    frame.must_be
     return unless expected_type
 
     raise "Top of stack is of type #{frame.type}, not of expected type #{expected_type}" unless frame.type == expected_type
