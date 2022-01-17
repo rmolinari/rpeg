@@ -464,6 +464,14 @@ assert(p:match(string.rep('a', 14000)))
 
 
 -- long strings for string capture
+l = 10000
+s = string.rep('a', l) .. string.rep('b', l) .. string.rep('c', l)
+
+p = (m.C(m.P'a'^1) * m.C(m.P'b'^1) * m.C(m.P'c'^1)) / '%3%2%1'
+
+assert(p:match(s) == string.rep('c', l) ..
+                     string.rep('b', l) .. 
+                     string.rep('a', l))
 
 print"+"
 
@@ -485,6 +493,19 @@ local function badgrammar (g, expected)
   assert(not stat)
   if expected then assert(find(expected, msg)) end
 end
+
+-- good x bad grammars
+m.P{ ('a' * m.V(1))^-1 }
+m.P{ -('a' * m.V(1)) }
+m.P{ ('abc' * m.V(1))^-1 }
+m.P{ -('abc' * m.V(1)) }
+badgrammar{ #m.P('abc') * m.V(1) }
+badgrammar{ -('a' + m.V(1)) }
+m.P{ #('a' * m.V(1)) }
+badgrammar{ #('a' + m.V(1)) }
+m.P{ m.B{ m.P'abc' } * 'a' * m.V(1) }
+badgrammar{ m.B{ m.P'abc' } * m.V(1) }
+badgrammar{ ('a' + m.P'bcd')^-1 * m.V(1) }
 
 
 -- simple tests for maximum sizes:

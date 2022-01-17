@@ -247,6 +247,15 @@ class Pattern
 
     # From LPEG:
     #
+    #   Creates a substitution capture, which captures the substring of the subject that matches patt, with substitutions. For any
+    #   capture inside patt with a value, the substring that matched the capture is replaced by the capture value (which should be a
+    #   string). The final captured value is the string resulting from all replacements.
+    def Cs(patt)
+      Pattern.new(CAPTURE, P(patt), capture: Capture::SUBST)
+    end
+
+    # From LPEG:
+    #
     #   Creates a table capture. This capture returns a table with all values from all anonymous captures made by patt inside this
     #   table in successive integer keys, starting at 1. Moreover, for each named capture group created by patt, the first value of
     #   the group is put into the table with the group name as its key. The captured value is only the table.
@@ -1234,7 +1243,7 @@ class Instruction
 end
 
 module Capture
-  KINDS = %i[const position argument simple group backref table fold string num query function close].each do |kind|
+  KINDS = %i[const position argument simple group backref subst table fold string num query function close].each do |kind|
     const_set kind.upcase, kind
   end
 
@@ -1621,6 +1630,9 @@ class ParsingMachine
       @capture_state.advance
 
       count
+    when Capture::SUBST
+      @capture_state.push extract_subst_capture
+      1
     when Capture::TABLE
       push_table_capture
     when Capture::FOLD
@@ -1635,7 +1647,7 @@ class ParsingMachine
     when Capture::QUERY
       push_query_capture
     else
-      raise "Unhandled capture kind #{capture.kind}"
+      raise "Unhandled capture kind #{breadcrumb.kind}"
     end
   end
 
@@ -1800,9 +1812,35 @@ class ParsingMachine
     end
   end
 
+  # This is LPEG's substcap (lpcap.c)
+  def extract_subst_capture
+    breadcrumb = @capture_state.current_breadcrumb
+    curr = breadcrumb.subject_index
+    result = +""
+    if breadcrumb.full?
+      result = @subject[curr, breadcrumb.size - 1]
+    else
+      @capture_state.advance # skip open
+      until @capture_state.current_breadcrumb.close?
+        nxt = @capture_state.current_breadcrumb.subject_index
+        result << @subject[curr, nxt - curr]
+        if (match = extract_one_string("replacement"))
+          result << match
+          curr = @capture_state.prev_end_index
+        else
+          # no capture index
+          curr = nxt
+        end
+      end
+      result << @subject[curr, @capture_state.current_breadcrumb.subject_index - curr]
+    end
+    @capture_state.advance
+    result
+  end
+
   # This is LPEG's stringcap (lpcap.c)
   #
-  # We just return the result
+  # We return the result
   def extract_string_capture
     fmt = @capture_state.current_breadcrumb.data.must_be_a(String)
     str_caps = get_str_caps # /* collect nested captures */
@@ -1892,13 +1930,13 @@ class ParsingMachine
   # ** whether there was a value
   # */
   #
-  # We just return the value or nil if there isn't one
+  # We just return the value, or nil if there isn't one
   def extract_one_string(what)
     case @capture_state.current_breadcrumb.kind
     when Capture::STRING
       extract_string_capture
-    # when Capture::SUBST
-      #   extract_subst_cap
+    when Capture::SUBST
+      extract_subst_cap
     else
       n = push_capture
       return nil if n.zero?
@@ -1972,6 +2010,13 @@ class ParsingMachine
 
     def index=(val)
       @breadcrumb_idx = val
+    end
+
+    # The ending subject index of the _previous_ breadcrumb
+    def prev_end_index
+      raise "No previous breadcrumb" unless @breadcrumb_idx.positive?
+
+      @breadcrumbs[@breadcrumb_idx - 1].end_index
     end
 
     # Search backwards from the current breadcrumb for the start of the group capture with the given name.

@@ -41,26 +41,20 @@ class TestsFromLpegCode < Test::Unit::TestCase
   end
 
   def test_charset_calculations
-    # TODO: implement enough support for these
-    #
-    # The LPEG tests use these to check that (internal) charset calculations are correct. Extracting the charsets from inside
-    # patterns apparently required captures - which is what the tests use - but we don't have those yet. See eqcharset in the Lua
-    # test code
+    eqcharset(m.S(""), m.P(false))
+    eqcharset(upper, m.R("AZ"))
+    eqcharset(lower, m.R("az"))
+    eqcharset(upper + lower, m.R("AZ", "az"))
+    eqcharset(upper + lower, m.R("AZ", "cz", "aa", "bb", "90"))
+    eqcharset(digit, m.S("01234567") + "8" + "9")
+    eqcharset(upper, letter - lower)
+    eqcharset(m.S(""), m.R())
+    assert(cs2str(m.S("")) == "")
 
-    # eqcharset(m.S"", m.P(false))
-    # eqcharset(upper, m.R("AZ"))
-    # eqcharset(lower, m.R("az"))
-    # eqcharset(upper + lower, m.R("AZ", "az"))
-    # eqcharset(upper + lower, m.R("AZ", "cz", "aa", "bb", "90"))
-    # eqcharset(digit, m.S"01234567" + "8" + "9")
-    # eqcharset(upper, letter - lower)
-    # eqcharset(m.S(""), m.R())
-    # assert(cs2str(m.S("")) == "")
-
-    # eqcharset(m.S"\0", "\0")
-    # eqcharset(m.S"\1\0\2", m.R"\0\2")
-    # eqcharset(m.S"\1\0\2", m.R"\1\2" + "\0")
-    # eqcharset(m.S"\1\0\2" - "\0", m.R"\1\2")
+    eqcharset(m.S("\0"), "\0")
+    eqcharset(m.S("\1\0\2"), m.R("\0\2"))
+    eqcharset(m.S("\1\0\2"), m.R("\1\2") + "\0")
+    eqcharset(m.S("\1\0\2") - "\0", m.R("\1\2"))
   end
 
   def test_predicates
@@ -70,11 +64,11 @@ class TestsFromLpegCode < Test::Unit::TestCase
     assert_equal 2, m.match(+m.P("a") * 2, "alo")
     assert_equal 2, m.match(++m.P("a") * 2, "alo")
     assert_nil m.match(++m.P("c") * 2, "alo")
-    # TODO: uncomment when we support the / operator for captures
-    # assert_equal "a..a.", m.match(m.Cs((++m.P("a") * 1 + m.P(1)/".")^0), "aloal")
-    # assert_equal "a..a.", m.match(m.Cs((+((+m.P"a")/"") * 1 + m.P(1)/".")^0), "aloal")
-    # assert_equal "a..a.", m.match(m.Cs((- -m.P("a") * 1 + m.P(1)/".")^0), "aloal")
-    # assert_equal "a..a.", m.match(m.Cs((-((-m.P"a")/"") * 1 + m.P(1)/".")^0), "aloal")
+
+    assert_equal "a..a.", m.match(m.Cs((++m.P("a") * 1 + m.P(1)/".")**0), "aloal")
+    assert_equal "a..a.", m.match(m.Cs((+((+m.P("a"))/"") * 1 + m.P(1)/".")**0), "aloal")
+    assert_equal "a..a.", m.match(m.Cs((- -m.P("a") * 1 + m.P(1)/".")**0), "aloal")
+    assert_equal "a..a.", m.match(m.Cs((-((-m.P("a"))/"") * 1 + m.P(1)/".")**0), "aloal")
   end
 
   def test_look_behind
@@ -145,21 +139,21 @@ class TestsFromLpegCode < Test::Unit::TestCase
 
   # test.lua ll.894-911
   def test_isnullable
-    isnullable(m.P("x")**-4)
+    nullable?(m.P("x")**-4)
     assert_equal 2, m.match(((m.P(0) + 1) * m.S("al"))**0, "alo")
     assert_equal 2, m.match((("x" + +m.P(1))**-4 * m.S("al"))**0, "alo")
-    isnullable("")
-    isnullable(m.P("x")**0)
-    isnullable(m.P("x")**-1)
-    isnullable(m.P("x") + 1 + 2 + m.P("a")**-1)
-    isnullable(-m.P("ab"))
-    isnullable(- -m.P("ab"))
-    isnullable(+ +(m.P("ab") + "xy"))
-    isnullable(- +(m.P("ab")**0))
-    isnullable(+ -m.P("ab")**1)
-    isnullable(+m.V(3))
-    isnullable(m.V(3) + m.V(1) + m.P('a')**-1)
-    isnullable([m.V(1) * m.V(2), m.V(2), m.P(0)])
+    nullable?("")
+    nullable?(m.P("x")**0)
+    nullable?(m.P("x")**-1)
+    nullable?(m.P("x") + 1 + 2 + m.P("a")**-1)
+    nullable?(-m.P("ab"))
+    nullable?(- -m.P("ab"))
+    nullable?(+ +(m.P("ab") + "xy"))
+    nullable?(- +(m.P("ab")**0))
+    nullable?(+ -m.P("ab")**1)
+    nullable?(+m.V(3))
+    nullable?(m.V(3) + m.V(1) + m.P('a')**-1)
+    nullable?([m.V(1) * m.V(2), m.V(2), m.P(0)])
     assert_equal 2, m.match(m.P([0, m.V(1) * m.V(2), m.V(2), m.P(1)])**0, "abc")
     assert_equal 0, m.match(m.P("")**-3, "a")
   end
@@ -214,8 +208,8 @@ class TestsFromLpegCode < Test::Unit::TestCase
     # test.lua l.176
     assert_equal [10, 20, 30, 1], m.match(m.Cc(10, 20, 30) * 'a' * m.Cp(), 'aaa')
     assert_equal [0, 10, 20, 30, 1], m.match(m.Cp() * m.Cc(10, 20, 30) * 'a' * m.Cp(), 'aaa')
-    # assert_equal [0, 10, 20, 30, 1], m.match(m.Ct(m.Cp() * m.Cc(10, 20, 30) * 'a' * m.Cp()), 'aaa')
-    # assert_equal [0, 7, 8, 10, 20, 30, 1], m.match(m.Ct(m.Cp() * m.Cc(7, 8) * m.Cc(10, 20, 30) * 'a' * m.Cp()), 'aaa')
+    assert_equal [0, 10, 20, 30, 1], m.match(m.Ct(m.Cp() * m.Cc(10, 20, 30) * 'a' * m.Cp()), 'aaa')
+    assert_equal [0, 7, 8, 10, 20, 30, 1], m.match(m.Ct(m.Cp() * m.Cc(7, 8) * m.Cc(10, 20, 30) * 'a' * m.Cp()), 'aaa')
     assert_equal [1, 2, 3, 4], m.match(m.Cc() * m.Cc() * m.Cc(1) * m.Cc(2, 3, 4) * m.Cc() * 'a', 'aaa')
     assert_equal [0, 4], m.match(m.Cp() * letter**1 * m.Cp(), "abcd")
 
@@ -454,9 +448,8 @@ class TestsFromLpegCode < Test::Unit::TestCase
     # -- no initial capture (very long match forces fold to be a pair open-close)
     assert_match_raises_error("no initial value", m.Cf(m.P(500), a_lambda), 'a' * 600)
 
-    # TODO uncomment when we have /-captures
     # -- nested capture produces no initial value
-    # assert_match_raises_error("no initial value", m.match, m.Cf(m.P(1) / {}, print), "alo")
+    assert_match_raises_error("no initial value", m.Cf(m.P(1) / {}, a_lambda), "alo")
   end
 
   def test_numbered_captures
@@ -510,35 +503,33 @@ class TestsFromLpegCode < Test::Unit::TestCase
     assert_equal 40, m.match(m.S("ba")**0 / { "ab" => 40 }, "abc")
     assert_equal [40], m.match(m.Ct((m.S("ba") / { "a" => 40 })**0), "abc")
 
-    # TODO: substitution captures
-    # assert_equal ".bc....e", m.match(m.Cs((m.C(1) / { "a" => ".", "d" => ".." })**0), "abcdde")
-    # assert_equal "abcdde", m.match(m.Cs((m.C(1) / { "f" => "." })**0), "abcdde")
-    # assert_equal "abc..e", m.match(m.Cs((m.C(1) / { "d" => "." })**0), "abcdde")
-    # assert_equal "abcdd.", m.match(m.Cs((m.C(1) / { "e" => "." })**0), "abcdde")
-    # assert_equal "..+.+", m.match(m.Cs((m.C(1) / { "e" => ".", "f" => "+" })**0), "eefef")
-    # assert_equal "abcdde", m.match(m.Cs((m.C(1))**0), "abcdde")
-    # assert_equal "abcdde", m.match(m.Cs(m.C(m.C(1)**0)), "abcdde")
-    # assert_equal "bcdde", m.match(1 * m.Cs(m.P(1)**0), "abcdde")
+    assert_equal ".bc....e", m.match(m.Cs((m.C(1) / { "a" => ".", "d" => ".." })**0), "abcdde")
+    assert_equal "abcdde", m.match(m.Cs((m.C(1) / { "f" => "." })**0), "abcdde")
+    assert_equal "abc..e", m.match(m.Cs((m.C(1) / { "d" => "." })**0), "abcdde")
+    assert_equal "abcdd.", m.match(m.Cs((m.C(1) / { "e" => "." })**0), "abcdde")
+    assert_equal "..+.+", m.match(m.Cs((m.C(1) / { "e" => ".", "f" => "+" })**0), "eefef")
+    assert_equal "abcdde", m.match(m.Cs((m.C(1))**0), "abcdde")
+    assert_equal "abcdde", m.match(m.Cs(m.C(m.C(1)**0)), "abcdde")
+    assert_equal "bcdde", m.match(1 * m.Cs(m.P(1)**0), "abcdde")
 
-    # TODO: These involve string captures. Uncomment when possible
-    # assert_equal "abcdde", m.match(m.Cs((m.C('0') / 'x' + 1)**0), "abcdde")
-    # assert_equal "xabxbx", m.match(m.Cs((m.C('0') / 'x' + 1)**0), "0ab0b0")
-    # assert_equal "3xax3", m.match(m.Cs((m.C('0') / 'x' + m.P(1) / { "b" => 3 })**0), "b0a0b")
+    assert_equal "abcdde", m.match(m.Cs((m.C('0') / 'x' + 1)**0), "abcdde")
+    assert_equal "xabxbx", m.match(m.Cs((m.C('0') / 'x' + 1)**0), "0ab0b0")
+    assert_equal "3xax3", m.match(m.Cs((m.C('0') / 'x' + m.P(1) / { "b" => 3 })**0), "b0a0b")
     assert_equal (-3), m.match(m.P(1) / '%0%0' / { "aa" => -3 } * 'x', 'ax')
     assert_equal (-3), m.match(m.C(1) / '%0%1' / { "aa" => 'z' } / { "z" => -3 } * 'x', 'ax')
     assert_equal "a%a", m.match(m.C("a") / "%1%%%0", "a")
-    # assert_equal ".xx.xx.xx.xx", m.match(m.Cs((m.P(1) / ".xx")**0), "abcd")
+    assert_equal ".xx.xx.xx.xx", m.match(m.Cs((m.P(1) / ".xx")**0), "abcd")
     assert_equal "300 - abc ", m.match(m.Cp() * m.P(3) * m.Cp()/"%2%1%1 - %0 ", "abcde")
 
     assert_equal "a", m.match(m.P(1) / "%0", "abc")
     assert_match_raises_error("invalid capture index", m.P(1) / "%1", "abc")
     assert_match_raises_error("invalid capture index", m.P(1) / "%9", "abc")
 
-    # assert_equal 0, m.match(m.Cs(m.Cc(0) * (m.P(1)/"")), "4321")
+    assert_equal "0", m.match(m.Cs(m.Cc(0) * (m.P(1) / "")), "4321")
 
-    # assert_equal "abcd", m.match(m.Cs((m.P(1) / "%0")**0), "abcd")
-    # assert_equal "a.ab.bc.cd.d", m.match(m.Cs((m.P(1) / "%0.%0")**0), "abcd")
-    # assert_equal "a.abca.ad", m.match(m.Cs((m.P("a") / "%0.%0" + 1)**0), "abcad")
+    assert_equal "abcd", m.match(m.Cs((m.P(1) / "%0")**0), "abcd")
+    assert_equal "a.ab.bc.cd.d", m.match(m.Cs((m.P(1) / "%0.%0")**0), "abcd")
+    assert_equal "a.abca.ad", m.match(m.Cs((m.P("a") / "%0.%0" + 1)**0), "abcad")
 
     pat = m.C(1)
     pat *= pat; pat *= pat; pat = pat * pat * m.C(1) / "%9 - %1"
@@ -563,6 +554,12 @@ class TestsFromLpegCode < Test::Unit::TestCase
     assert_equal 'c' * l + 'b' * l + 'a' * l, p.match(s)
   end
 
+  def test_substitution_captures
+    pi = "3.14159 26535 89793 23846 26433 83279 50288 41971 69399 37510"
+    assert_equal m.match(m.Cs((m.P("1") / "a" + m.P("5") / "b" + m.P("9") / "c" + 1)**0), pi),
+                 m.match(m.Cs((m.P(1) / { "1" => "a", "5" => "b", "9" => "c" })**0), pi)
+  end
+
   # For isolating a failing test. Run with the -n flag to ruby.
   def test_onceler
   end
@@ -581,12 +578,26 @@ class TestsFromLpegCode < Test::Unit::TestCase
     assert_raise_message(message) { m.P(pattern.is_a?(Proc) ? pattern.call : pattern).match(*args) }
   end
 
-  def isnullable(patt)
-  end
-
   def a_lambda
     @a_lambda ||= ->(x) { x }
   end
+
+  def nullable?(patt)
+    m.P(patt).nullable?
+  end
+
+  # Convert a charset pattern to a string
+  def cs2str(c)
+    m.match(m.Cs((c + m.P(1)/"")**0), allchars)
+  end
+
+  # Check that two charset patterns describe equal sets
+  def eqcharset(c1, c2)
+    assert_equal cs2str(c1), cs2str(c2)
+  end
+
+  # All 1-byte character codes in a string
+  def allchars; @allchars ||= (0..255).map(&:chr).join; end
 
   def digit; m.S("0123456789"); end
   def upper; m.S("ABCDEFGHIJKLMNOPQRSTUVWXYZ"); end
