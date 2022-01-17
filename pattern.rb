@@ -52,6 +52,7 @@ require 'must_be'
 # - Match-time captures, Cmt
 # - program generation optimations
 #   - other pattern-based optimizations: need to scan through the LPEG code again
+#     - headfail(), getFirst(); need to understand them
 #   - profiling
 # - break this file into smaller parts
 # - port LPEG's re module
