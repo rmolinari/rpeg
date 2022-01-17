@@ -414,6 +414,12 @@ class Pattern
   #
   # From the LPEG docs:
   #
+  #   patt / string
+  #
+  #     Creates a string capture. It creates a capture string based on string. The captured value is a copy of string, except that
+  #     the character % works as an escape character: any sequence in string of the form %n, with n between 1 and 9, stands for the
+  #     match of the n-th capture in patt. The sequence %0 stands for the whole match. The sequence %% stands for a single %.
+  #
   #   patt / number
   #
   #     Creates a numbered capture. For a non-zero number, the captured value is the n-th value captured by patt. When number is
@@ -434,6 +440,8 @@ class Pattern
   # We create a query capture when a Hash is passed
   def /(other)
     case other
+    when String
+      Pattern.new(CAPTURE, self, data:other, capture: Capture::STRING)
     when Integer
       raise "Cannot use negative number for numbered capture" if other.negative?
 
@@ -932,7 +940,7 @@ class Pattern
           return false
         when REPEATED
           return true # we never fail, as we can match zero occurrences
-        when NOT
+        when NOT, BEHIND
           # can match empty, but can fail
           return (pred != :nofail)
         when AND
@@ -1226,7 +1234,7 @@ class Instruction
 end
 
 module Capture
-  KINDS = %i[const position argument simple group backref table fold num query function close].each do |kind|
+  KINDS = %i[const position argument simple group backref table fold string num query function close].each do |kind|
     const_set kind.upcase, kind
   end
 
@@ -1267,6 +1275,12 @@ module Capture
 
     def close?
       @kind == CLOSE
+    end
+
+    # The index of the end of the match
+    # q.v. LPEG's closeaddr (lpcap.h)
+    def end_index
+      @subject_index + size - 1
     end
 
     def to_s
@@ -1611,6 +1625,9 @@ class ParsingMachine
       push_table_capture
     when Capture::FOLD
       push_fold_capture
+    when Capture::STRING
+      @capture_state.push extract_string_capture
+      1
     when Capture::NUM
       push_num_capture
     when Capture::FUNCTION
@@ -1772,7 +1789,7 @@ class ParsingMachine
   # This is LPEG's querycap (lpcap.c)
   def push_query_capture
     hash = @capture_state.current_breadcrumb.data.must_be_a(Hash)
-    push_one_nested_value  # /* get nested capture */
+    push_one_nested_value # /* get nested capture */
     query_key = @capture_state.pop # pop it
     result = hash[query_key]
     if result
@@ -1782,6 +1799,124 @@ class ParsingMachine
       0 # no result
     end
   end
+
+  # This is LPEG's stringcap (lpcap.c)
+  #
+  # We just return the result
+  def extract_string_capture
+    fmt = @capture_state.current_breadcrumb.data.must_be_a(String)
+    str_caps = get_str_caps # /* collect nested captures */
+    result = +""
+    idx = -1
+    loop do
+      idx += 1
+      break if idx >= fmt.length
+
+      if fmt[idx] != "%"
+        result << fmt[idx]
+        next
+      end
+
+      idx += 1
+      unless ('0'..'9').include?(fmt[idx])
+        result << fmt[idx]
+        next
+      end
+
+      capture_index = fmt[idx].to_i
+      raise "invalid capture index (#{capture_index})" if capture_index > str_caps.size - 1
+
+      str_cap = str_caps[capture_index]
+      if str_cap.isstring
+        result << @subject[(str_cap.subject_start)...(str_cap.subject_end)]
+        next
+      end
+
+      cs_index = @capture_state.index
+      @capture_state.index = str_caps[capture_index].breadcrumb_idx
+      val = extract_one_string("capture") # lpeg's addonestring, but return instead of appending to b
+      raise "no values in capture index #{capture_index}" unless val
+
+      result << val
+      @capture_state.index = cs_index
+    end
+    result
+  end
+
+  # This is LPEG's getstrcaps (lpcap.c)
+  # /*
+  # ** Collect values from current capture into array 'cps'. Current
+  # ** capture must be Cstring (first call) or Csimple (recursive calls).
+  # ** (In first call, fills %0 with whole match for Cstring.)
+  # ** Returns number of elements in the array that were filled.
+  # */
+  #
+  # We simply return the array of StrAux elements
+  def get_str_caps
+    result = []
+    first_aux = StrAux.new
+    first_aux.isstring = true
+    first_aux.subject_start = @capture_state.current_breadcrumb.subject_index
+    result << first_aux
+
+    first_is_full = @capture_state.current_breadcrumb.full?
+    if first_is_full
+      result[0].subject_end = @capture_state.current_breadcrumb.end_index
+      @capture_state.advance
+    else
+      @capture_state.advance
+      until @capture_state.current_breadcrumb.close?
+        if result.size > MAX_STR_CAPS
+          @capture_state.seek_next! # just skip it
+        elsif @capture_state.current_breadcrumb.kind == Capture::STRING
+          result += get_str_caps # get the matches recursively
+        else
+          # Not a string
+          aux = StrAux.new
+          aux.isstring = false
+          aux.breadcrumb_idx = @capture_state.index
+          @capture_state.seek_next!
+          result << aux
+        end
+      end
+      result[0].subject_end = @capture_state.current_breadcrumb.end_index
+      @capture_state.advance # skip capture close
+    end
+    result
+  end
+
+  # This is LPEG's addonestring (lpcap.c)
+  #
+  # /*
+  # ** Evaluates a capture and adds its first value to buffer 'b'; returns
+  # ** whether there was a value
+  # */
+  #
+  # We just return the value or nil if there isn't one
+  def extract_one_string(what)
+    case @capture_state.current_breadcrumb.kind
+    when Capture::STRING
+      extract_string_capture
+    # when Capture::SUBST
+      #   extract_subst_cap
+    else
+      n = push_capture
+      return nil if n.zero?
+
+      @capture_state.pop(n-1) # just leave one
+      res = @capture_state.pop
+      # LPEG tests the type of this value with lua_isstring, which returns 1 if the value is a string or a number.
+      raise "invalid #{what} value (a #{res.class})" unless res.is_a?(String) || res.is_a?(Numeric)
+
+      res.to_s
+    end
+  end
+
+  # q.v. struct StrAux in lpcap.c
+  #
+  # value is a Breadcrumb or subject index pair (start stop)
+  StrAux = Struct.new :isstring, :breadcrumb_idx, :subject_start, :subject_end
+  MAX_STR_CAPS = 10
 
   # q.v. LPEG's CaptureState, lpcap.h
   #

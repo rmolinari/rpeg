@@ -166,7 +166,7 @@ class TestsFromLpegCode < Test::Unit::TestCase
 
   # test.lua ll.918-943
   def test_bad_grammar
-    bad_grammar = lambda do |grammar, expected_pattern|
+    bad_grammar = lambda do |grammar, expected_pattern = ""|
       expected_pattern = /#{expected_pattern}/ if expected_pattern.is_a?(String)
       assert_raise_message(expected_pattern) { m.P(grammar) }
     end
@@ -191,6 +191,19 @@ class TestsFromLpegCode < Test::Unit::TestCase
 
     assert_equal 1, m.match({ x: 'a' * -m.V(0) }, "aaa")
     assert_nil m.match({ x: 'a' * -m.V(0) }, "aaaa")
+
+    # -- good x bad grammars
+    m.P([('a' * m.V(0))**-1])
+    m.P([-('a' * m.V(0))])
+    m.P([('abc' * m.V(0))**-1])
+    m.P([-('abc' * m.V(0))])
+    bad_grammar.call([+m.P('abc') * m.V(0)])
+    bad_grammar.call([-('a' + m.V(0))])
+    m.P([+('a' * m.V(0))])
+    bad_grammar.call([+('a' + m.V(0))])
+    m.P([m.B([m.P('abc')]) * 'a' * m.V(0)])
+    bad_grammar.call([m.B([m.P('abc')]) * m.V(0)])
+    bad_grammar.call([('a' + m.P('bcd'))**-1 * m.V(0)])
   end
 
   def test_const_capture
@@ -511,8 +524,43 @@ class TestsFromLpegCode < Test::Unit::TestCase
     # assert_equal "abcdde", m.match(m.Cs((m.C('0') / 'x' + 1)**0), "abcdde")
     # assert_equal "xabxbx", m.match(m.Cs((m.C('0') / 'x' + 1)**0), "0ab0b0")
     # assert_equal "3xax3", m.match(m.Cs((m.C('0') / 'x' + m.P(1) / { "b" => 3 })**0), "b0a0b")
-    # assert_equal (-3), m.match(m.P(1) / '%0%0' / { "aa" => -3 } * 'x', 'ax')
-    # assert_equal (-3), m.match(m.C(1) / '%0%1' / { "aa" => 'z' } / { "z" => -3 } * 'x', 'ax')
+    assert_equal (-3), m.match(m.P(1) / '%0%0' / { "aa" => -3 } * 'x', 'ax')
+    assert_equal (-3), m.match(m.C(1) / '%0%1' / { "aa" => 'z' } / { "z" => -3 } * 'x', 'ax')
+    assert_equal "a%a", m.match(m.C("a") / "%1%%%0", "a")
+    # assert_equal ".xx.xx.xx.xx", m.match(m.Cs((m.P(1) / ".xx")**0), "abcd")
+    assert_equal "300 - abc ", m.match(m.Cp() * m.P(3) * m.Cp()/"%2%1%1 - %0 ", "abcde")
+
+    assert_equal "a", m.match(m.P(1) / "%0", "abc")
+    assert_match_raises_error("invalid capture index", m.P(1) / "%1", "abc")
+    assert_match_raises_error("invalid capture index", m.P(1) / "%9", "abc")
+
+    # assert_equal 0, m.match(m.Cs(m.Cc(0) * (m.P(1)/"")), "4321")
+
+    # assert_equal "abcd", m.match(m.Cs((m.P(1) / "%0")**0), "abcd")
+    # assert_equal "a.ab.bc.cd.d", m.match(m.Cs((m.P(1) / "%0.%0")**0), "abcd")
+    # assert_equal "a.abca.ad", m.match(m.Cs((m.P("a") / "%0.%0" + 1)**0), "abcad")
+
+    pat = m.C(1)
+    pat *= pat; pat *= pat; pat = pat * pat * m.C(1) / "%9 - %1"
+    assert_equal "9 - 1", pat.match("1234567890")
+
+    # -- too many captures (just ignore extra ones)
+    p = m.C(1)**0 / "%2-%9-%0-%9"
+    assert_equal "1-8-01234567890123456789-8", p.match("01234567890123456789")
+    s = "12345678901234567890" * 20
+    assert_equal "9-1-#{s}-3", m.match(m.C(1)**0 / '%9-%1-%0-%3', s)
+
+    # -- string captures with non-string subcaptures
+    p = m.Cc('alo') * m.C(1) / "%1 - %2 - %1"
+    assert_equal 'alo - x - alo', p.match('x')
+
+    assert_match_raises_error("invalid capture value (a TrueClass)", m.Cc(true) / "%1", "a")
+
+    # l = 10_000 # slow: about 500 ms
+    l = 1_000
+    s = 'a' * l + 'b' * l + 'c' * l
+    p = (m.C(m.P('a')**1) * m.C(m.P('b')**1) * m.C(m.P('c')**1)) / '%3%2%1'
+    assert_equal 'c' * l + 'b' * l + 'a' * l, p.match(s)
   end
 
   # For isolating a failing test. Run with the -n flag to ruby.
@@ -529,7 +577,7 @@ class TestsFromLpegCode < Test::Unit::TestCase
 
   # If pattern is a lambda call it; otherwise just use it
   def assert_match_raises_error(message, pattern, *args)
-    message = /#{message}/ if message.is_a?(String)
+    message = /#{Regexp.quote message}/ if message.is_a?(String)
     assert_raise_message(message) { m.P(pattern.is_a?(Proc) ? pattern.call : pattern).match(*args) }
   end
 

@@ -463,45 +463,7 @@ assert(p:match(string.rep('a', 14000)))
 -- tests for Query Replacements
 
 
-assert(m.match(m.Cs(m.Cc(0) * (m.P(1)/"")), "4321") == "0")
-
-assert(m.match(m.Cs((m.P(1) / "%0")^0), "abcd") == "abcd")
-assert(m.match(m.Cs((m.P(1) / "%0.%0")^0), "abcd") == "a.ab.bc.cd.d")
-assert(m.match(m.Cs((m.P("a") / "%0.%0" + 1)^0), "abcad") == "a.abca.ad")
-assert(m.match(m.C("a") / "%1%%%0", "a") == "a%a")
-assert(m.match(m.Cs((m.P(1) / ".xx")^0), "abcd") == ".xx.xx.xx.xx")
-assert(m.match(m.Cp() * m.P(3) * m.Cp()/"%2%1%1 - %0 ", "abcde") ==
-   "411 - abc ")
-
-assert(m.match(m.P(1)/"%0", "abc") == "a")
-checkerr("invalid capture index", m.match, m.P(1)/"%1", "abc")
-checkerr("invalid capture index", m.match, m.P(1)/"%9", "abc")
-
-p = m.C(1)
-p = p * p; p = p * p; p = p * p * m.C(1) / "%9 - %1"
-assert(p:match("1234567890") == "9 - 1")
-
--- too many captures (just ignore extra ones)
-p = m.C(1)^0 / "%2-%9-%0-%9"
-assert(p:match"01234567890123456789" == "1-8-01234567890123456789-8")
-s = string.rep("12345678901234567890", 20)
-assert(m.match(m.C(1)^0 / "%9-%1-%0-%3", s) == "9-1-" .. s .. "-3")
-
--- string captures with non-string subcaptures
-p = m.Cc('alo') * m.C(1) / "%1 - %2 - %1"
-assert(p:match'x' == 'alo - x - alo')
-
-checkerr("invalid capture value (a boolean)", m.match, m.Cc(true) / "%1", "a")
-
 -- long strings for string capture
-l = 10000
-s = string.rep('a', l) .. string.rep('b', l) .. string.rep('c', l)
-
-p = (m.C(m.P'a'^1) * m.C(m.P'b'^1) * m.C(m.P'c'^1)) / '%3%2%1'
-
-assert(p:match(s) == string.rep('c', l) ..
-                     string.rep('b', l) .. 
-                     string.rep('a', l))
 
 print"+"
 
@@ -523,19 +485,6 @@ local function badgrammar (g, expected)
   assert(not stat)
   if expected then assert(find(expected, msg)) end
 end
-
--- good x bad grammars
-m.P{ ('a' * m.V(1))^-1 }
-m.P{ -('a' * m.V(1)) }
-m.P{ ('abc' * m.V(1))^-1 }
-m.P{ -('abc' * m.V(1)) }
-badgrammar{ #m.P('abc') * m.V(1) }
-badgrammar{ -('a' + m.V(1)) }
-m.P{ #('a' * m.V(1)) }
-badgrammar{ #('a' + m.V(1)) }
-m.P{ m.B{ m.P'abc' } * 'a' * m.V(1) }
-badgrammar{ m.B{ m.P'abc' } * m.V(1) }
-badgrammar{ ('a' + m.P'bcd')^-1 * m.V(1) }
 
 
 -- simple tests for maximum sizes:
