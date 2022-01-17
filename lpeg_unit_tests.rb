@@ -593,6 +593,11 @@ class TestsFromLpegCode < Test::Unit::TestCase
 
   # For isolating a failing test. Run with the -n flag to ruby.
   def test_onceler
+    patt1 = m.P({
+                  S: +m.V('S1'), # -- rule has capture, but '#' must ignore it
+                  S1: m.C('abc') + 3
+                })
+    assert_equal 0, patt1.match('abc')
   end
 
   # Notes on possible targets for profiling

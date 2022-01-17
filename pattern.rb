@@ -1311,6 +1311,7 @@ class ParsingMachine
     @subject_index = initial_pos
     @stack = []
     @breadcrumbs = [].must_only_ever_contain(Capture::Breadcrumb) # the records of the captures we make during parsing
+    @bread_count = 0 # the number of breadcrumbs in @breadcrumbs (some in the array may be stale)
 
     @extra_args = extra_args.clone
   end
@@ -1387,14 +1388,14 @@ class ParsingMachine
         raise "Empty stack for partial commit!" unless stack_top
 
         stack_top.subject_index = @subject_index
-        stack_top.breadcrumbs = @breadcrumbs.clone
+        stack_top.bread_count = @bread_count
         @i_ptr += instr.offset
       when i::BACK_COMMIT
         # A combination of a fail and a commit. We backtrack, but then jump to the specified instruction rather than using the
         # backtrack label. It's used for the AND pattern. See Ierusalimschy, 4.4
         stack_top = pop(:state)
         @subject_index = stack_top.subject_index
-        @breadcrumbs = stack_top.breadcrumbs
+        @bread_count = stack_top.bread_count
         @i_ptr += instr.offset
       when i::SPAN
         # Special instruction for when we are repeating over a charset, which is common. We just consume as many maching characters
@@ -1421,7 +1422,9 @@ class ParsingMachine
         record_capture(instr, size: 0, subject_index: @subject_index)
       when i::CLOSE_CAPTURE
         # As in LPEG: "if possible, turn capture into a full capture"
-        lc = @breadcrumbs.last.must_be # still on the breadcrumb list
+        raise "Close capture without an open" unless @bread_count.positive?
+
+        lc = @breadcrumbs[@bread_count - 1].must_be # still on the breadcrumb list
         if lc.size.zero? && (@subject_index - lc.subject_index) < 255 # TODO: should we care about an upper bound here?
           # The previous breadcrumb was an OPEN, and we are closing it
           lc.size = @subject_index - lc.subject_index + 1
@@ -1466,7 +1469,8 @@ class ParsingMachine
   #
   # The first two vary with the capture type and are passed in here. The other two come cleanly out of the Instruction.
   private def record_capture(instr, size:, subject_index:)
-    @breadcrumbs.push Capture::Breadcrumb.new(size, subject_index, instr.data, instr.aux[:kind].must_be)
+    @breadcrumbs[@bread_count] = Capture::Breadcrumb.new(size, subject_index, instr.data, instr.aux[:kind].must_be)
+    @bread_count += 1
     @i_ptr += 1
   end
 
@@ -1491,14 +1495,14 @@ class ParsingMachine
 
       @i_ptr = top.i_ptr
       @subject_index = top.subject_index
-      @breadcrumbs = top.breadcrumbs
+      @bread_count = top.bread_count
     end
   end
 
   ########################################
   # Stack manipulation
 
-  Frame = Struct.new :type, :i_ptr, :subject_index, :breadcrumbs
+  Frame = Struct.new :type, :i_ptr, :subject_index, :bread_count
 
   # We push either
   # - an instruction pointer, which may later be used to jump, etc, or
@@ -1508,7 +1512,7 @@ class ParsingMachine
     raise "Bad stack frame type" unless %i[instruction state].include?(type)
 
     frame = if type == :state
-              Frame.new(type, @i_ptr + offset, @subject_index, @breadcrumbs.clone)
+              Frame.new(type, @i_ptr + offset, @subject_index, @bread_count)
             else
               Frame.new(type, @i_ptr + offset)
             end
@@ -1575,7 +1579,7 @@ class ParsingMachine
   def captures
     raise "Cannot call #captures unless machine ran sucessfully" unless done? && success?
 
-    @capture_state = CaptureState.new(@breadcrumbs)
+    @capture_state = CaptureState.new(@breadcrumbs[0, @bread_count])
 
     push_capture until @capture_state.done?
 
