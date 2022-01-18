@@ -53,7 +53,6 @@ require 'must_be'
 #     - headfail(), getFirst(); need to understand them
 #   - profiling
 # - break this file into smaller parts
-# - move the push_* and extract_* methods into the CaptureState class. There's clear feature envy there.
 # - port LPEG's re module
 class Pattern
   NODE_TYPES = %i[
@@ -1686,7 +1685,7 @@ class ParsingMachine
   def captures
     raise "Cannot call #captures unless machine ran sucessfully" unless done? && success?
 
-    @capture_state = CaptureState.new(@breadcrumbs[0, @bread_count], @subject, @extra_args)
+    @capture_state = new_capture_state
     @capture_state.capture_all
 
     result = @capture_state.captures
@@ -1697,43 +1696,20 @@ class ParsingMachine
     result
   end
 
-  # In LPEG this logic is split between the main VM loop (lpvm.c) and the runtimecap function (lpcap.c). As noted above, the LPEG
-  # code is complicated by the need to manage references to objects living on the Lua stack to avoid C-side memory leaks. We don't
-  # have to worry about such things
-  #
-  # We start at the CLOSE_RUN_TIME breadcrumb and
-  #  - change the CLOSE_RUN_TIME to a regular CLOSE
-  #  - find the matching OPEN and grab the Proc that we need to call
-  #  - push the nested captures and immediately pop them
-  #  - pass the necessary arguments to proc: the subject, the current posistion, and the just-popped captures
-  #  - clear out all the breadcrumbs after the OPEN
-  #  - return the results of the Proc call
-  #
-  # This needs to be in ParsingMachine and not CaptureState because it must modify the VM's @breadcrumbs list
+  # This stub needs to be in ParsingMachine and not CaptureState because it must modify @bread_count
   def run_time_capture
     # We need point to the close capture we just hit. LPEG is tricksy here: there isn't actually a CLOSE capture/breadcrumb yet, but
     # the data structure - an array of Capture objects - means that the "next capture" memory be interpreted as a Capture. For once
     # we have to do something manually that in the C code happens "automatically"
     add_capture Capture::Breadcrumb.new(0, @subject_index, nil, Capture::CLOSE)
+    capture_state = new_capture_state(@bread_count - 1) # start on the CLOSE we just tacked on
 
-    # start on the CLOSE we just tacked on
-    @capture_state = CaptureState.new(@breadcrumbs[0, @bread_count], @subject, @extra_args, @bread_count - 1)
-
-    @capture_state.seek_matching_open!
-    @capture_state.current_breadcrumb.kind.must_be(Capture::GROUP)
-    open_cap_idx = @capture_state.index
-
-    proc = @capture_state.current_breadcrumb.data.must_be_a(Proc) # get the proc to call
-
-    args = [@subject, @subject_index]
-    n = @capture_state.push_nested_captures
-    args += @capture_state.pop(n) # prepare arguments for the function
-    result = Array(proc.call(*args)) # ... and pass them to the proc
-
-    # Blast away the breadcrumbs we just worked through, but keep the OPEN
-    @bread_count = open_cap_idx + 1
-    @capture_state = nil # we are done with this
+    @bread_count, result = capture_state.run_time_capture
     result
+  end
+
+  def new_capture_state(starting_index = nil)
+    CaptureState.new(@breadcrumbs[0, @bread_count], @subject, @subject_index, @extra_args, starting_index:)
   end
 
   # q.v. struct StrAux in lpcap.c
@@ -1749,16 +1725,17 @@ class ParsingMachine
   class CaptureState
     attr_reader :captures
 
-    def initialize(breadcrumbs, subject, extra_args, index = 0)
+    def initialize(breadcrumbs, subject, subject_index, extra_args, starting_index:)
       @breadcrumbs = breadcrumbs
-      @breadcrumb_idx = index
+      @breadcrumb_idx = starting_index || 0
       @subject = subject.freeze
+      @subject_index = subject_index
       @extra_args = extra_args.freeze
       @captures = []
     end
 
     def capture_all
-      push_capture until self.done?
+      push_capture until done?
     end
 
     # push a captured value
@@ -1814,34 +1791,34 @@ class ParsingMachine
 
     # Extract the next capture, returning the number of values obtained.
     private def push_capture
-      breadcrumb = self.current_breadcrumb
+      breadcrumb = current_breadcrumb
 
       case breadcrumb.kind
       when Capture::CONST, Capture::RUNTIME
-        self.push breadcrumb.data
-        self.advance
+        push breadcrumb.data
+        advance
         1
       when Capture::POSITION
-        self.push breadcrumb.subject_index
-        self.advance
+        push breadcrumb.subject_index
+        advance
         1
       when Capture::ARGUMENT
         index = breadcrumb.data
         raise "Reference to absent extra argument ##{index}" if index > @extra_args.size
 
         # with an Argument Capture the extra arguments are indexed from 1
-        self.push @extra_args[index - 1]
-        self.advance
+        push @extra_args[index - 1]
+        advance
         1
       when Capture::SIMPLE
         count = push_nested_captures(add_extra: true)
         # We need to make the whole match appear first in the list we just generated
-        self.munge_last!(count) if count > 1
+        munge_last!(count) if count > 1
         count
       when Capture::GROUP
         if breadcrumb.data
           # Named group. We don't extract anything but just move forward. A Backref capture might find us later
-          self.seek_next!
+          seek_next!
           0
         else
           push_nested_captures
@@ -1850,15 +1827,15 @@ class ParsingMachine
         group_name = breadcrumb.data
         bc_idx = @breadcrumb_idx
 
-        self.seek_back_ref!(group_name) # move to the named group capture
+        seek_back_ref!(group_name) # move to the named group capture
         count = push_nested_captures
         # restore our location and step to the next one
         @breadcrumb_idx = bc_idx
-        self.advance
+        advance
 
         count
       when Capture::SUBST
-        self.push extract_subst_capture
+        push extract_subst_capture
         1
       when Capture::TABLE
         push_table_capture
@@ -1873,7 +1850,6 @@ class ParsingMachine
         push_function_capture
       when Capture::QUERY
         push_query_capture
-      when Capture::RUNTIME
       else
         raise "Unhandled capture kind #{breadcrumb.kind}"
       end
@@ -1893,26 +1869,26 @@ class ParsingMachine
     #
     # Code is closely based on the LPEG code.
     def push_nested_captures(add_extra: false)
-      open_capture = self.current_breadcrumb
-      self.advance
+      open_capture = current_breadcrumb
+      advance
 
       if open_capture.full?
         cpos = open_capture.subject_index
         match_len = open_capture.size - 1
         match_range = cpos...(cpos + match_len)
-        self.push @subject[match_range]
+        push @subject[match_range]
         return 1
       end
 
       count = 0
-      count += push_capture until self.current_breadcrumb.close? # Nested captures
+      count += push_capture until current_breadcrumb.close? # Nested captures
 
       # We have reached our matching close
-      close_capture = self.current_breadcrumb
-      self.advance
+      close_capture = current_breadcrumb
+      advance
       if add_extra || count.zero?
         match_range = (open_capture.subject_index)...(close_capture.subject_index)
-        self.push @subject[match_range]
+        push @subject[match_range]
         count += 1
       end
       count.must_be.positive?
@@ -1929,111 +1905,111 @@ class ParsingMachine
     #     others. But this felt clunky, especially when we want to, say, join the anonymous arguments into a string.
     #   - Maybe we should return a hash with an :anonymous key giving the array of anonymous captures, or something like that.
     def push_table_capture
-      if self.current_breadcrumb.full?
+      if current_breadcrumb.full?
         # Empty table
-        self.push []
-        self.advance
+        push []
+        advance
         return 1
       end
 
-      self.advance # move past the open capture
+      advance # move past the open capture
       named_results = {}
       indexed_results = []
       next_index = 0
-      until self.current_breadcrumb.close?
-        breadcrumb = self.current_breadcrumb
+      until current_breadcrumb.close?
+        breadcrumb = current_breadcrumb
         if breadcrumb.kind == Capture::GROUP && breadcrumb.data
           # named group. We only keep track of the *first* value in the group
           push_one_nested_value
-          value = self.pop
+          value = pop
           named_results[breadcrumb.data] = value
         else
           # not a named group
           # k is the number we just got. We pop them back and put them in our result object
           k = push_capture
           (0..(k - 1)).to_a.reverse.each do |i|
-            indexed_results[next_index + i] = self.pop
+            indexed_results[next_index + i] = pop
           end
           next_index += k
         end
       end
-      self.advance # skip the close entry
+      advance # skip the close entry
 
       if named_results.empty?
-        self.push indexed_results
+        push indexed_results
       else
         indexed_results.each_with_index do |v, i|
           named_results[i] = v
         end
-        self.push named_results.merge
+        push named_results.merge
       end
       1
     end
 
     # This is LPEG's foldcap (lpcap.c)
     def push_fold_capture
-      fn = self.current_breadcrumb.data.must_be
+      fn = current_breadcrumb.data.must_be
 
-      if self.current_breadcrumb.full? ||
-         (self.advance; self.current_breadcrumb.close?) ||
+      if current_breadcrumb.full? ||
+         (advance; current_breadcrumb.close?) ||
          (n = push_capture).zero?
         raise "no initial value for fold capture"
       end
 
       # discard all but one capture. This is the first value for the fold accumulator
-      self.pop(n - 1)
-      acc = self.pop
-      until self.current_breadcrumb.close?
+      pop(n - 1)
+      acc = pop
+      until current_breadcrumb.close?
         n = push_capture
-        acc = fn.call(acc, *self.pop(n))
+        acc = fn.call(acc, *pop(n))
       end
-      self.advance # skip close
-      self.push acc
+      advance # skip close
+      push acc
       1
     end
 
     # Push nested values and then pop off all but one
     def push_one_nested_value
       n = push_nested_captures
-      self.pop(n - 1)
+      pop(n - 1)
     end
 
     # This is LPEG's numcap (lpcap.c)
     def push_num_capture
-      idx = self.current_breadcrumb.data
+      idx = current_breadcrumb.data
       if idx.zero?
         # skip them all
-        self.seek_next!
+        seek_next!
         return 0
       end
 
       n = push_nested_captures
       raise "no capture '#{idx}" if n < idx
 
-      vals = self.pop(n) # pop them off
-      self.push vals[idx - 1] # push back the one we want
+      vals = pop(n) # pop them off
+      push vals[idx - 1] # push back the one we want
       1
     end
 
     # This is LPEG's functioncap (lpcap.c)
     def push_function_capture
-      proc = self.current_breadcrumb.data.must_be_a(Proc) # get the proc to call
+      proc = current_breadcrumb.data.must_be_a(Proc) # get the proc to call
       n = push_nested_captures # get the nested captures...
-      args = self.pop(n) # ...pop them
+      args = pop(n) # ...pop them
       result = Array(proc.call(*args)) # ... and pass them to the proc
       num = result.size
-      result.each { |cap| self.push cap } # the results, if any, are the capture values
+      result.each { |cap| push cap } # the results, if any, are the capture values
       num
     end
 
     # This is LPEG's querycap (lpcap.c)
     def push_query_capture
-      hash = self.current_breadcrumb.data.must_be_a(Hash)
+      hash = current_breadcrumb.data.must_be_a(Hash)
       push_one_nested_value
-      query_key = self.pop # pop it
+      query_key = pop # pop it
       result = hash[query_key]
       if result
-        self.push(result)
+        push(result)
         1
       else
         0 # no result
@@ -2042,27 +2018,27 @@ class ParsingMachine
 
     # This is LPEG's substcap (lpcap.c)
     def extract_subst_capture
-      breadcrumb = self.current_breadcrumb
+      breadcrumb = current_breadcrumb
       curr = breadcrumb.subject_index
       result = +""
       if breadcrumb.full?
         result = @subject[curr, breadcrumb.size - 1]
       else
-        self.advance # skip open
-        until self.current_breadcrumb.close?
-          nxt = self.current_breadcrumb.subject_index
+        advance # skip open
+        until current_breadcrumb.close?
+          nxt = current_breadcrumb.subject_index
           result << @subject[curr, nxt - curr]
           if (match = extract_one_string("replacement"))
             result << match
-            curr = self.prev_end_index
+            curr = prev_end_index
           else
             # no capture index
             curr = nxt
           end
         end
-        result << @subject[curr, self.current_breadcrumb.subject_index - curr]
+        result << @subject[curr, current_breadcrumb.subject_index - curr]
       end
-      self.advance
+      advance
       result
     end
 
@@ -2070,8 +2046,8 @@ class ParsingMachine
     #
     # We return the result
     def extract_string_capture
-      fmt = self.current_breadcrumb.data.must_be_a(String)
-      str_caps = self.str_caps
+      fmt = current_breadcrumb.data.must_be_a(String)
+      the_str_caps = str_caps
       result = +""
       idx = -1
       loop do
@@ -2090,16 +2066,16 @@ class ParsingMachine
         end
 
         capture_index = fmt[idx].to_i
-        raise "invalid capture index (#{capture_index})" if capture_index > str_caps.size - 1
+        raise "invalid capture index (#{capture_index})" if capture_index > the_str_caps.size - 1
 
-        str_cap = str_caps[capture_index]
+        str_cap = the_str_caps[capture_index]
         if str_cap.isstring
           result << @subject[(str_cap.subject_start)...(str_cap.subject_end)]
           next
         end
 
         cs_index = @breadcrumb_idx
-        @breadcrumb_idx = str_caps[capture_index].breadcrumb_idx
+        @breadcrumb_idx = the_str_caps[capture_index].breadcrumb_idx
         val = extract_one_string("capture") # lpeg's addonestring, but return instead of appending to b
         raise "no values in capture index #{capture_index}" unless val
 
@@ -2118,7 +2094,7 @@ class ParsingMachine
     #
     # We just return the value, or nil if there isn't one
     def extract_one_string(what)
-      case self.current_breadcrumb.kind
+      case current_breadcrumb.kind
       when Capture::STRING
         extract_string_capture
       when Capture::SUBST
@@ -2127,13 +2103,43 @@ class ParsingMachine
         n = push_capture
         return nil if n.zero?
 
-        self.pop(n - 1) # just leave one
-        res = self.pop
+        pop(n - 1) # just leave one
+        res = pop
         # LPEG tests the type of this value with lua_isstring, which returns 1 if the value is a string or a number.
         raise "invalid #{what} value (a #{res.class})" unless res.is_a?(String) || res.is_a?(Numeric)
 
         res.to_s
       end
+    end
+
+
+    # In LPEG this logic is split between the main VM loop (lpvm.c) and the runtimecap function (lpcap.c). As noted above, the LPEG
+    # code is complicated by the need to manage references to objects living on the Lua stack to avoid C-side memory leaks. We don't
+    # have to worry about such things
+    #
+    # We start at the CLOSE_RUN_TIME breadcrumb and
+    #  - change the CLOSE_RUN_TIME to a regular CLOSE
+    #  - find the matching OPEN and grab the Proc that we need to call
+    #  - push the nested captures and immediately pop them
+    #  - pass the necessary arguments to proc: the subject, the current posistion, and the just-popped captures
+    #  - clear out all the breadcrumbs after the OPEN
+    #
+    # We return a [bc, result] pair.
+    #  - bc is the new "breadcrumb count" for the VM, as we discard the existing captures for the RunTime grouping.
+    #  - result is the result of the Proc call
+    def run_time_capture
+      seek_matching_open!
+      current_breadcrumb.kind.must_be(Capture::GROUP)
+      open_cap_idx = index
+
+      proc = current_breadcrumb.data.must_be_a(Proc) # get the proc to call
+
+      args = [@subject, @subject_index]
+      n = push_nested_captures
+      args += pop(n) # prepare arguments for the function
+      result = Array(proc.call(*args)) # ... and pass them to the proc
+
+      [open_cap_idx + 1, result]
     end
 
     # This is LPEG's getstrcaps (lpcap.c)
@@ -2155,9 +2161,8 @@ class ParsingMachine
       first_is_full = current_breadcrumb.full?
       if first_is_full
         result[0].subject_end = current_breadcrumb.end_index
-        advance
       else
-        advance
+        advance # move past the Open
         until current_breadcrumb.close?
           if result.size > MAX_STR_CAPS
             seek_next! # just skip it
@@ -2173,8 +2178,8 @@ class ParsingMachine
           end
         end
         result[0].subject_end = current_breadcrumb.end_index
-        advance # skip capture close
       end
+      advance # skip capture close/full capture
       result
     end
 
