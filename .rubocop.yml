@@ -1,5 +1,5 @@
 AllCops:
-  TargetRubyVersion: 3.0
+  TargetRubyVersion: 3.1
 
 Layout/LineLength:
   Max: 132
@@ -11,7 +11,7 @@ Style/StringLiterals:
   Enabled: false
 
 Metrics/MethodLength:
-  Max: 40
+  Max: 100
   CountAsOne: ['array', 'hash']
 
 Metrics/AbcSize:

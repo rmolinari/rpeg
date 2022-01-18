@@ -8,6 +8,9 @@ require 'set'
 require 'must_be'
 # MustBe.disable
 
+require_relative 'captures'
+require_relative 'parsing_machine'
+
 # This class is intended to play the same role as LPEG's lpeg module.
 #
 # Top-level differences from LPEG:
@@ -52,7 +55,6 @@ require 'must_be'
 #   - other pattern-based optimizations: need to scan through the LPEG code again
 #     - headfail(), getFirst(); need to understand them
 #   - profiling
-# - break this file into smaller parts
 # - port LPEG's re module
 class Pattern
   NODE_TYPES = %i[
@@ -454,7 +456,7 @@ class Pattern
   #     Creates a numbered capture. For a non-zero number, the captured value is the n-th value captured by patt. When number is
   #     zero, there are no captured values.
   #
-  #   patt / table
+  #   patt / table  [for this we accept a Hash]
   #
   #     Creates a query capture. It indexes the given table using as key the first value captured by patt, or the whole match if
   #     patt produced no value. The value at that index is the final value of the capture. If the table does not have that key,
@@ -465,8 +467,6 @@ class Pattern
   #     Creates a function capture. It calls the given function passing all captures made by patt as arguments, or the whole match
   #     if patt made no capture. The values returned by the function are the final values of the capture. In particular, if function
   #     returns no value, there is no captured value.
-  #
-  # We create a query capture when a Hash is passed
   def /(other)
     case other
     when String
@@ -627,7 +627,7 @@ class Pattern
         prog << Instruction.new(i::CHAR, data: ch)
       end
     when ANY
-      prog << Instruction.new(i::ANY, data: data)
+      prog << Instruction.new(i::ANY, data:)
     when SEQ
       prog = left.program + right.program
     when NTRUE
@@ -691,16 +691,16 @@ class Pattern
       len = fixed_len
       if len && !child.has_captures?
         prog += child.program
-        prog << Instruction.new(i::FULL_CAPTURE, data: data, aux: { capture_length: len, kind: capture })
+        prog << Instruction.new(i::FULL_CAPTURE, data:, aux: { capture_length: len, kind: capture })
       else
-        prog << Instruction.new(i::OPEN_CAPTURE, data: data, aux: { capture_length: 0, kind: capture })
+        prog << Instruction.new(i::OPEN_CAPTURE, data:, aux: { kind: capture })
         prog += child.program
-        prog << Instruction.new(i::CLOSE_CAPTURE, aux: { capture_length: 0, kind: Capture::CLOSE })
+        prog << Instruction.new(i::CLOSE_CAPTURE, aux: { kind: Capture::CLOSE })
       end
     when RUNTIME
-      prog << Instruction.new(i::OPEN_CAPTURE, data: data, aux: { capture_length: 0, kind: Capture::GROUP })
+      prog << Instruction.new(i::OPEN_CAPTURE, data:, aux: { kind: Capture::GROUP })
       prog += child.program
-      prog << Instruction.new(i::CLOSE_RUN_TIME, aux: { capture_length: 0, kind: Capture::CLOSE })
+      prog << Instruction.new(i::CLOSE_RUN_TIME, aux: { kind: Capture::CLOSE })
     when GRAMMAR
       start_line_of_nonterminal = {}
       full_rule_code = []
@@ -729,9 +729,9 @@ class Pattern
         # may reach there via another jump/commit/etc
         offset = start_line - idx
         prog[idx] = if prog[idx + 1] && prog[idx + 1].op_code == :return
-                      Instruction.new(i::JUMP, offset: offset)
+                      Instruction.new(i::JUMP, offset:)
                     else
-                      Instruction.new(i::CALL, offset: offset)
+                      Instruction.new(i::CALL, offset:)
                     end
       end
     else
@@ -769,10 +769,8 @@ class Pattern
         when i::COMMIT, i::PARTIAL_COMMIT, i::BACK_COMMIT
           # instruction with unconditional explicit jumps
           final_final_t = finallabel(program, final_t)
-          # The jump becomes that instruction...
-          instr = program[final_t].clone
-          # ... but we must correct the offset
-          instr.offset = final_final_t - idx
+          instr = program[final_t].clone # The jump becomes that instruction...
+          instr.offset = final_final_t - idx # ... but we must correct the offset
           program[idx] = instr
           redo # "reoptimize the label"
         else
@@ -1018,9 +1016,6 @@ class Pattern
 
     # ** can do whatever they want, so the result is conservative.
     # */
-    #
-    # TODO:
-    #  - implement for our equivalent of TRep, TRunTime, TCaputre, etc. when we implement them
     def check_pred(pattern, pred)
       raise "Bad check predicate #{pred}" unless CHECK_PREDICATES.include?(pred)
 
@@ -1028,15 +1023,11 @@ class Pattern
       # to be fast overall - but let's try a new technique.
       loop do
         case pattern.type
-        when STRING, CHARSET, ANY, OPEN_CALL
+        when STRING, CHARSET, ANY, OPEN_CALL, NFALSE
           # Not nullable; for open_call this is a blind assumption
           return false
-        when NTRUE
+        when NTRUE, REPEATED
           return true
-        when NFALSE
-          return false
-        when REPEATED
-          return true # we never fail, as we can match zero occurrences
         when NOT, BEHIND
           # can match empty, but can fail
           return (pred != :nofail)
@@ -1044,30 +1035,29 @@ class Pattern
           # can match empty; can fail exactly when body can
           return true if pred == :nullable
 
-          pattern = pattern.child.must_be
+          pattern = pattern.child
         when RUNTIME
           # can fail; match empty iff body does
           return false if pred == :nofail
 
-          pattern = pattern.child.must_be
+          pattern = pattern.child
         when SEQ
           return false unless check_pred(pattern.left, pred)
 
-          pattern = pattern.right.must_be
+          pattern = pattern.right
         when ORDERED_CHOICE
           return true if check_pred(pattern.left, pred)
 
-          pattern = pattern.right.must_be
+          pattern = pattern.right
         when GRAMMAR
           # Strings are matched by the initial nonterminal
           first_rule = pattern.child.first
-          first_rule.type.must_be RULE
-          pattern = first_rule.child.must_be
+          pattern = first_rule.child
         when CALL, RULE, CAPTURE
           # The call's rule, rule's pattern, and capture's pattern are in child
-          pattern = pattern.child.must_be
+          pattern = pattern.child
         else
-          raise "Bad pattern type #{pattern.type}"
+          raise "Unhandled pattern type #{pattern.type}"
         end
       end
     end
@@ -1259,9 +1249,8 @@ class Pattern
   ########################################
   # Experimental monkeypatching
   #
-  # Very annoyingly, Ruby's #coerce mechanism is only used by the Numeric types. This means it doesn't help with things like "a" +
-  # Pattern.P(true) even though we want the convenience. The only way I can think to make it work is to monkeypatch String,
-  # TrueClass, FalseClass, etc.
+  # Very annoyingly, Ruby's #coerce mechanism is only used by the Numeric types. This means it doesn't help with things like the
+  # convenient "a" + Pattern.P(true). The only way I can think to make it work is to monkeypatch.
 
   # Technique from https://stackoverflow.com/a/61438012/1299011
   module NonNumericOverloadExtension
@@ -1277,988 +1266,6 @@ class Pattern
   [::String, ::TrueClass, ::FalseClass, ::Hash, ::Array].each do |klass|
     klass.class_eval do
       prepend NonNumericOverloadExtension
-    end
-  end
-end
-
-# Instances are generated during program generation in Pattern and consumed in the ParsingMachine
-#
-# - op_code: the instruction op
-# - offset: the address offset used in jumps, calls, etc.
-# - aux: extra information used by instruction like capture
-#   - in LPEG this is used to carefully pack data by bit-twiddling, etc., but we can use anything, such as structs, etc., as needed
-# - data: this is called "key" in LPEG and is used to store pointers to Lua-based objects, etc.
-#   - we will just store Ruby objects here.
-#   - it contains things like the Set/Range of characters for Charset instructions, the character count for Any instructions, etc.
-class Instruction
-  OP_CODES = %i[
-    char charset any jump choice call return commit back_commit
-    partial_commit span op_end fail fail_twice unreachable
-    open_capture close_capture close_run_time full_capture behind
-  ].each do |op|
-    const_set op.upcase, op
-  end
-
-  OP_WIDTH = OP_CODES.map(&:length).max
-
-  attr_reader :op_code, :data, :aux
-  attr_accessor :offset
-
-  def initialize(op_code, offset: nil, data: nil, aux: nil)
-    raise "Bad instruction op_code #{op_code}" unless OP_CODES.include?(op_code)
-
-    @op_code = op_code
-    @offset = offset
-    @data = data
-    @aux = aux
-  end
-
-  def to_s
-    return @to_s if @to_s
-
-    str = op_code.to_s.rjust(OP_WIDTH + 1)
-
-    case op_code
-    when CHAR, ANY
-      str << " #{data}"
-    when BEHIND
-      str << " #{aux}"
-    when CHARSET, SPAN
-      str << " #{data.to_a.join}"
-    when JUMP, CHOICE, CALL, COMMIT, BACK_COMMIT, PARTIAL_COMMIT
-      str << " #{offset}"
-    when RETURN, OP_END, FAIL, FAIL_TWICE, UNREACHABLE
-    # no-op
-    when OPEN_CAPTURE, CLOSE_CAPTURE, FULL_CAPTURE, CLOSE_RUN_TIME
-      str << " data:#{data} aux:#{aux}"
-    else
-      raise "Unhandled op_code #{op_code} in Instruction#to_s"
-    end
-    @to_s = str
-  end
-end
-
-module Capture
-  KINDS = %i[const position argument simple group backref subst table fold string num query function close runtime].each do |kind|
-    const_set kind.upcase, kind
-  end
-
-  # Used inside the VM when recording capture information.
-  class Breadcrumb
-    # From time to time we need to tweak each of these
-    attr_accessor :size, :subject_index, :data, :kind
-
-    # q.v. LPEG's Capture struct (lpcap.h)
-    #
-    # We use size instead of siz, subject_index instead of s, and data instead of idx.
-    def initialize(size, subject_index, data, kind)
-      raise "Bad Capture kind #{kind}" unless KINDS.include?(kind)
-
-      @size = size
-      @subject_index = subject_index
-      @data = data
-      @kind = kind
-    end
-
-    # An "open" capture is a "full capture" if it has non-zero size. See isfullcap in lpcap.c
-    def full?
-      @size.positive?
-    end
-
-    def close?
-      @kind == CLOSE
-    end
-
-    # The index of the end of the match, q.v. LPEG's closeaddr (lpcap.h)
-    def end_index
-      @subject_index + size - 1
-    end
-
-    # Dynamic because of the setters we sometimes use
-    def to_s
-      "Breadcrumb size:#{size} sub_idx:#{subject_index} data:#{data.inspect} kind:#{kind}"
-    end
-  end
-end
-
-# The VM used to run the programs generated from the patterns.
-#
-# See lpvm.c in the LPEG code.
-class ParsingMachine
-  # program: the program to run
-  # subject: the string to match against
-  # initial_pos: the position in subject to start the search at
-  # extra_args may have been supplied in the initial #match call. These are consumed by Argument Captures.
-  def initialize(program, subject, initial_pos, extra_args)
-    @program = program.clone.freeze.must_only_contain(Instruction)
-    @prog_len = @program_size
-    @subject = subject.clone.freeze
-
-    @i_ptr = 0 # index in @program of the next instruction
-    @subject_index = initial_pos
-    @stack = []
-    @breadcrumbs = [].must_only_ever_contain(Capture::Breadcrumb) # the records of the captures we make during parsing
-    @bread_count = 0 # the number of breadcrumbs in @breadcrumbs (some in the array may be stale)
-
-    @extra_args = extra_args.clone
-  end
-
-  def success?
-    @success
-  end
-
-  private def done!
-    @done = true
-  end
-
-  private def done?
-    @done
-  end
-
-  def run
-    i = Instruction # shorthand
-
-    loop do
-      return if done?
-
-      if @i_ptr == :fail
-        handle_fail_ptr
-        next
-      end
-
-      raise "current instruction pointer #{@i_ptr} is negative" if @i_ptr.negative?
-
-      instr = @program[@i_ptr]
-
-      case instr.op_code
-      when i::CHAR
-        check_char(instr.data == @subject[@subject_index])
-      when i::CHARSET
-        check_char(instr.data.include?(@subject[@subject_index]))
-      when i::ANY
-        if @subject_index + instr.data <= @subject.size
-          @i_ptr += 1
-          @subject_index += instr.data
-        else
-          @i_ptr = :fail
-        end
-      when i::JUMP
-        @i_ptr += instr.offset
-      when i::CHOICE
-        # We push the offset for the other side of the choice
-        push(:state, instr.offset)
-        @i_ptr += 1
-      when i::CALL
-        # Call is like jump, but we push the return address onto the stack first
-        push(:instruction, 1)
-        @i_ptr += instr.offset
-      when i::RETURN
-        @i_ptr = pop(:instruction).i_ptr
-      when i::COMMIT
-        # we pop and discard the top of the stack (which must be a full state) and then do the jump given by arg1. Even though we
-        # are discarding it check that it was a full state for sanity.
-        _ = pop(:state)
-        @i_ptr += instr.offset
-      when i::PARTIAL_COMMIT
-        # Sort of a combination of commit (which pops) and choice (which pushes), but we just tweak the top of the stack. See
-        # Ierusalimschy, sec 4.3
-        stack_top = peek(:state)
-        raise "Empty stack for partial commit!" unless stack_top
-
-        stack_top.subject_index = @subject_index
-        stack_top.bread_count = @bread_count
-        @i_ptr += instr.offset
-      when i::BACK_COMMIT
-        # A combination of a fail and a commit. We backtrack, but then jump to the specified instruction rather than using the
-        # backtrack label. It's used for the AND pattern. See Ierusalimschy, 4.4
-        stack_top = pop(:state)
-        @subject_index = stack_top.subject_index
-        @bread_count = stack_top.bread_count
-        @i_ptr += instr.offset
-      when i::SPAN
-        # Special instruction for when we are repeating over a charset, which is common. We just consume as many maching characters
-        # as there are. This never fails as we can always match at least zero.
-        @subject_index += 1 while instr.data.include?(@subject[@subject_index])
-        @i_ptr += 1
-      when i::BEHIND
-        n = instr.aux # the (fixed) length of the pattern we want to match.
-        if n > @subject_index
-          # We can't jump back in the index so far
-          @i_ptr = :fail
-        else
-          @subject_index -= n
-          @i_ptr += 1
-        end
-      when i::FAIL
-        @i_ptr = :fail
-      when i::FAIL_TWICE
-        # An optimization for the NOT implementation. We pop the top of the stack and discard it, and then enter the fail routine
-        # again. For sanity's sake we'll check that the thing we are popping is a :state entry. See Ierusalimschy, 4.4
-        _ = pop(:state)
-        @i_ptr = :fail
-      when i::CLOSE_RUN_TIME
-        # The LPEG code for runtime captures is very complicated. Reading through it, it appears that the complexity comes from
-        # needing to carefully manage the capture breadcrumbs wrt to the Lua values living on the Lua stack to avoid memory
-        # leaks. We don't have to worry about that here, as everything is in Ruby and we can leave the hard stuff to the garbage
-        # collector. The remaining work is little more than we have with a function capture.
-        result = run_time_capture
-        handle_run_time_capture_result(result)
-      when i::OPEN_CAPTURE
-        record_capture(instr, size: 0, subject_index: @subject_index)
-      when i::CLOSE_CAPTURE
-        # As in LPEG: "if possible, turn capture into a full capture"
-        raise "Close capture without an open" unless @bread_count.positive?
-
-        lc = @breadcrumbs[@bread_count - 1].must_be # still on the breadcrumb list
-        if lc.size.zero? && (@subject_index - lc.subject_index) < 255 # TODO: should we care about an upper bound here?
-          # The previous breadcrumb was an OPEN, and we are closing it
-          lc.size = @subject_index - lc.subject_index + 1
-          @i_ptr += 1
-        else
-          record_capture(instr, size: 1, subject_index: @subject_index)
-        end
-      when i::FULL_CAPTURE
-        # We have an all-in-one match, and the "capture length" tells us how far back in the subject the match started.
-        len = instr.aux[:capture_length].must_be(Integer)
-        record_capture(instr, size: 1 + len, subject_index: @subject_index - len)
-      when i::OP_END
-        @success = true
-        done!
-      when i::UNREACHABLE
-        raise "VM reached :unreachable instruction at line #{@i_ptr}"
-      else
-        raise "Unhandled op code #{instr.op_code}"
-      end
-    end
-  end
-
-  def program_to_s
-    @program_to_s ||= @program.each_with_index.map do |instr, i|
-      "#{i.to_s.rjust 3}: #{instr}"
-    end.join("\n")
-  end
-
-  # For this and the handling of the foo_CAPTURE op codes above, see the corresponding LPEG code in lpvm.c
-  #
-  # In that code, captop points to the "next" or "new" capture info, so captop - 1 is the current top.
-  private def record_capture(instr, size:, subject_index:)
-    add_capture Capture::Breadcrumb.new(size, subject_index, instr.data, instr.aux[:kind].must_be)
-    @i_ptr += 1
-  end
-
-  private def add_capture(breadcrumb)
-    @breadcrumbs[@bread_count] = breadcrumb
-    @bread_count += 1
-  end
-
-  # React to a character match or failure
-  private def check_char(success)
-    if success
-      @i_ptr += 1
-      @subject_index += 1
-    else
-      @i_ptr = :fail
-    end
-  end
-
-  # Not for the FAIL op_code, but for when the instruction pointer is :fail
-  private def handle_fail_ptr
-    if @stack.empty?
-      @success = false
-      done!
-    else
-      top = pop
-      return if top.type == :instruction
-
-      @i_ptr = top.i_ptr
-      @subject_index = top.subject_index
-      @bread_count = top.bread_count
-    end
-  end
-
-  ########################################
-  # Stack manipulation
-
-  Frame = Struct.new :type, :i_ptr, :subject_index, :bread_count
-
-  # We push either
-  # - an instruction pointer, which may later be used to jump, etc, or
-  # - the current state with an offset, which is the [instr ptr + offset, subject_index, breadcrumb list] triple.
-  private def push(type, offset)
-    raise "Must push something onto stack" unless offset
-    raise "Bad stack frame type" unless %i[instruction state].include?(type)
-
-    frame = if type == :state
-              Frame.new(type, @i_ptr + offset, @subject_index, @bread_count)
-            else
-              Frame.new(type, @i_ptr + offset)
-            end
-    @stack.push frame
-  end
-
-  # Pop and return the top stack frame. If expected_type is non nil check that the frame has that type
-  #
-  # Raise if stack is empty
-  private def pop(expected_type = nil)
-    raise "Nothing in stack to pop" if @stack.empty?
-
-    frame = @stack.pop
-    check_frame(frame, expected_type)
-    frame
-  end
-
-  # Peek and return the top of the stack without popping it. Return nil if the stack is empty.
-  #
-  # If expecting is given make sure that the top of the stack is of the given type
-  private def peek(expected_type = nil)
-    return nil if @stack.empty?
-
-    frame = @stack.last
-    check_frame(frame, expected_type)
-    frame
-  end
-
-  private def check_frame(frame, expected_type)
-    return unless expected_type
-
-    raise "Top of stack is of type #{frame.type}, not of expected type #{expected_type}" unless frame.type == expected_type
-  end
-
-  ########################################
-  # Capture extraction code
-
-  # From the ICloseRuntIme main-loop switch statement in lpvm.c
-  def handle_run_time_capture_result(results)
-    directive, *dyn_captures = results
-    if !directive
-      @i_ptr = :fail
-      return
-    end
-
-    @subject_index = if directive == true
-                       @subject_index
-                     else
-                       directive.must_be_a(Integer)
-                       raise 'invalid position returned by match-time capture' if directive < @subject_index || directive > @subject.size
-
-                       directive
-                     end
-
-    if dyn_captures.empty?
-      # no dynamic captures. Just get rid of the OPEN capture we still have
-      @bread_count -= 1
-    else
-      # This is LPEG's adddyncaptures in lpvm.c
-      @breadcrumbs[@bread_count - 1].data = nil # make the group capture an anonymous group
-      dyn_captures.each do |cap_val|
-        # LPEG uses a special RUNTIME capture kind here to help find these things later if they need to be removed. We don't appear
-        # to need it - we could just use a CONST capture. But let's follow LPEG just in case.
-        add_capture Capture::Breadcrumb.new(1, @subject_index, cap_val, Capture::RUNTIME)
-      end
-      add_capture Capture::Breadcrumb.new(1, @subject_index, nil, Capture::CLOSE) # close the group
-    end
-    @i_ptr += 1
-  end
-
-  # Returns the captures obtained when we ran the machine.
-  #
-  # If there are no captures we return the final index into the subject string. This is typically one past the matched section.
-  # If there is exactly one capture we return it.
-  # If there are multiple captures we return them in an array.
-  #
-  # The capture code in LPEG (mostly in lpcap.c) looks complicated at first but it is made up of a bunch of pieces that each do one
-  # thing and coordinate well togehter. Some extra complexity comes from the manual memory management required in C and the need to
-  # interact with Lua values - this appears to be especially the case with the Runtime capture code, which is bewildering at first
-  # view. Porting it one capture kind at a time let me understand it at some level as I went.
-  #
-  # Basic model:
-  #
-  # - We push Breadcrumb objects onto the stack as we run the VM based on the instructions generated from the patterns. We never pop
-  #   anything from the stack: the Captures are breadcrumbs that let us work out after the fact what happend. Things do get removed
-  #   from the Capture stack but only at backtrack points because a match has failed.
-  # - The End instruction tacks on an unbalanced CloseCapture. This appears to be simply an end-marker like the null string
-  #   terminator. We don't do this
-  # - After the VM runs we analyze the Breadcrumbs to calculate the captures. We go back and forth through the data. So isn't not a
-  #   stack, but an array.
-  #
-  # This method plays the same role as LPEG's getcaptures (lpcap.c)
-  def captures
-    raise "Cannot call #captures unless machine ran sucessfully" unless done? && success?
-
-    @capture_state = new_capture_state
-    @capture_state.capture_all
-
-    result = @capture_state.captures
-
-    return result.first if result.size == 1
-    return @subject_index if result.empty?
-
-    result
-  end
-
-  # This stub needs to be in ParsingMachine and not CaptureState because it must modify @bread_count
-  def run_time_capture
-    # We need point to the close capture we just hit. LPEG is tricksy here: there isn't actually a CLOSE capture/breadcrumb yet, but
-    # the data structure - an array of Capture objects - means that the "next capture" memory be interpreted as a Capture. For once
-    # we have to do something manually that in the C code happens "automatically"
-    add_capture Capture::Breadcrumb.new(0, @subject_index, nil, Capture::CLOSE)
-    capture_state = new_capture_state(@bread_count - 1) # start on the CLOSE we just tacked on
-
-    @bread_count, result = capture_state.run_time_capture
-    result
-  end
-
-  def new_capture_state(starting_index = nil)
-    CaptureState.new(@breadcrumbs[0, @bread_count], @subject, @subject_index, @extra_args, starting_index:)
-  end
-
-  # q.v. struct StrAux in lpcap.c
-  #
-  # value is a Breadcrumb or subject index pair (start stop)
-  StrAux = Struct.new :isstring, :breadcrumb_idx, :subject_start, :subject_end
-  MAX_STR_CAPS = 10
-
-  # q.v. LPEG's CaptureState, lpcap.h
-  #
-  # As a Ruby class it contains as much of the capture code (lpcap.c) as makes sense. Because of this, it needs to know the
-  # @subject and the extra_args
-  class CaptureState
-    attr_reader :captures
-
-    def initialize(breadcrumbs, subject, subject_index, extra_args, starting_index:)
-      @breadcrumbs = breadcrumbs
-      @breadcrumb_idx = starting_index || 0
-      @subject = subject.freeze
-      @subject_index = subject_index
-      @extra_args = extra_args.freeze
-      @captures = []
-    end
-
-    def capture_all
-      push_capture until done?
-    end
-
-    # push a captured value
-    def push(cap)
-      @captures << cap
-    end
-
-    # Pop the top capture off and return it, erroring if there isn't one.
-    #
-    # If the argument is given we pop off the last n captures as a chunk (not one by one) and return them in an array.
-    #
-    # nil might be in the stack, so we need to count rather than simply check pop for truthiness
-    def pop(num = nil)
-      if num
-        raise "There are not #{num} captures to pop" if num > @captures.size
-
-        @captures.pop(num)
-      else
-        raise "There is not a capture to pop" unless @captures.size.positive?
-
-        @captures.pop
-      end
-    end
-
-    def done?
-      @breadcrumb_idx == @breadcrumbs.size
-    end
-
-    def current_breadcrumb
-      raise "No available breadcrumb" if done?
-
-      @breadcrumbs[@breadcrumb_idx]
-    end
-
-    def advance
-      @breadcrumb_idx += 1
-    end
-
-    def index
-      @breadcrumb_idx
-    end
-
-    def index=(val)
-      @breadcrumb_idx = val
-    end
-
-    # The ending subject index of the _previous_ breadcrumb
-    def prev_end_index
-      raise "No previous breadcrumb" unless @breadcrumb_idx.positive?
-
-      @breadcrumbs[@breadcrumb_idx - 1].end_index
-    end
-
-    # Extract the next capture, returning the number of values obtained.
-    private def push_capture
-      breadcrumb = current_breadcrumb
-
-      case breadcrumb.kind
-      when Capture::CONST, Capture::RUNTIME
-        push breadcrumb.data
-        advance
-        1
-      when Capture::POSITION
-        push breadcrumb.subject_index
-        advance
-        1
-      when Capture::ARGUMENT
-        index = breadcrumb.data
-        raise "Reference to absent extra argument ##{index}" if index > @extra_args.size
-
-        # with an Argument Capture the extra arguments are indexed from 1
-        push @extra_args[index - 1]
-        advance
-        1
-      when Capture::SIMPLE
-        count = push_nested_captures(add_extra: true)
-        # We need to make the whole match appear first in the list we just generated
-        munge_last!(count) if count > 1
-        count
-      when Capture::GROUP
-        if breadcrumb.data
-          # Named group. We don't extract anything but just move forward. A Backref capture might find us later
-          seek_next!
-          0
-        else
-          push_nested_captures
-        end
-      when Capture::BACKREF
-        group_name = breadcrumb.data
-        bc_idx = @breadcrumb_idx
-
-        seek_back_ref!(group_name) # move to the named group capture
-        count = push_nested_captures
-        # restore our location and step to the next one
-        @breadcrumb_idx = bc_idx
-        advance
-
-        count
-      when Capture::SUBST
-        push extract_subst_capture
-        1
-      when Capture::TABLE
-        push_table_capture
-      when Capture::FOLD
-        push_fold_capture
-      when Capture::STRING
-        self.push extract_string_capture
-        1
-      when Capture::NUM
-        push_num_capture
-      when Capture::FUNCTION
-        push_function_capture
-      when Capture::QUERY
-        push_query_capture
-      else
-        raise "Unhandled capture kind #{breadcrumb.kind}"
-      end
-    end
-
-    # See pushnestedcaptures in lpcap.c
-    #
-    # /*
-    # ** Push on the Lua stack all values generated by nested captures inside
-    # ** the current capture. Returns number of values pushed. 'addextra'
-    # ** makes it push the entire match after all captured values. The
-    # ** entire match is pushed also if there are no other nested values,
-    # ** so the function never returns zero.
-    # */
-    #
-    # We append what we find to the capture state and return their number.
-    #
-    # Code is closely based on the LPEG code.
-    def push_nested_captures(add_extra: false)
-      open_capture = current_breadcrumb
-      advance
-
-      if open_capture.full?
-        cpos = open_capture.subject_index
-        match_len = open_capture.size - 1
-        match_range = cpos...(cpos + match_len)
-        push @subject[match_range]
-        return 1
-      end
-
-      count = 0
-      count += push_capture until current_breadcrumb.close? # Nested captures
-
-      # We have reached our matching close
-      close_capture = current_breadcrumb
-      advance
-      if add_extra || count.zero?
-        match_range = (open_capture.subject_index)...(close_capture.subject_index)
-        push @subject[match_range]
-        count += 1
-      end
-      count.must_be.positive?
-      count
-    end
-
-    # This is LPEG's tablecap (lpcap.h)
-    #
-    # Instead of always producing a Hash, potentially with integer keys 0, 1, 2, ..., we produce an array when there are no named
-    # groups to worry about.
-    # - TODO: reconsider this. Arrays are nicer than Hashes in this case but client code might not know which class to expect,
-    #   especially when getting captures from a complicated pattern.
-    #   - At first I always returned a Hash, with numeric keys 0, 1, 2, ... for the anonymous captures and name keys for the
-    #     others. But this felt clunky, especially when we want to, say, join the anonymous arguments into a string.
-    #   - Maybe we should return a hash with an :anonymous key giving the array of anonymous captures, or something like that.
-    def push_table_capture
-      if current_breadcrumb.full?
-        # Empty table
-        push []
-        advance
-        return 1
-      end
-
-      advance # move past the open capture
-      named_results = {}
-      indexed_results = []
-      next_index = 0
-      until current_breadcrumb.close?
-        breadcrumb = current_breadcrumb
-        if breadcrumb.kind == Capture::GROUP && breadcrumb.data
-          # named group. We only keep track of the *first* value in the group
-          push_one_nested_value
-          value = pop
-          named_results[breadcrumb.data] = value
-        else
-          # not a named group
-          # k is the number we just got. We pop them back and put them in our result object
-          k = push_capture
-          (0..(k - 1)).to_a.reverse.each do |i|
-            indexed_results[next_index + i] = pop
-          end
-          next_index += k
-        end
-      end
-      advance # skip the close entry
-
-      if named_results.empty?
-        push indexed_results
-      else
-        indexed_results.each_with_index do |v, i|
-          named_results[i] = v
-        end
-        push named_results.merge
-      end
-      1
-    end
-
-    # This is LPEG's foldcap (lpcap.c)
-    def push_fold_capture
-      fn = current_breadcrumb.data.must_be
-
-      if current_breadcrumb.full? ||
-         (advance; current_breadcrumb.close?) ||
-         (n = push_capture).zero?
-        raise "no initial value for fold capture"
-      end
-
-      # discard all but one capture. This is the first value for the fold accumulator
-      pop(n - 1)
-      acc = pop
-      until current_breadcrumb.close?
-        n = push_capture
-        acc = fn.call(acc, *pop(n))
-      end
-      advance # skip close
-      push acc
-      1
-    end
-
-    # Push nested values and then pop off all but one
-    def push_one_nested_value
-      n = push_nested_captures
-      pop(n - 1)
-    end
-
-    # This is LPEG's numcap (lpcap.c)
-    def push_num_capture
-      idx = current_breadcrumb.data
-      if idx.zero?
-        # skip them all
-        seek_next!
-        return 0
-      end
-
-      n = push_nested_captures
-      raise "no capture '#{idx}" if n < idx
-
-      vals = pop(n) # pop them off
-      push vals[idx - 1] # push back the one we want
-      1
-    end
-
-    # This is LPEG's functioncap (lpcap.c)
-    def push_function_capture
-      proc = current_breadcrumb.data.must_be_a(Proc) # get the proc to call
-      n = push_nested_captures # get the nested captures...
-      args = pop(n) # ...pop them
-      result = Array(proc.call(*args)) # ... and pass them to the proc
-      num = result.size
-      result.each { |cap| push cap } # the results, if any, are the capture values
-      num
-    end
-
-    # This is LPEG's querycap (lpcap.c)
-    def push_query_capture
-      hash = current_breadcrumb.data.must_be_a(Hash)
-      push_one_nested_value
-      query_key = pop # pop it
-      result = hash[query_key]
-      if result
-        push(result)
-        1
-      else
-        0 # no result
-      end
-    end
-
-    # This is LPEG's substcap (lpcap.c)
-    def extract_subst_capture
-      breadcrumb = current_breadcrumb
-      curr = breadcrumb.subject_index
-      result = +""
-      if breadcrumb.full?
-        result = @subject[curr, breadcrumb.size - 1]
-      else
-        advance # skip open
-        until current_breadcrumb.close?
-          nxt = current_breadcrumb.subject_index
-          result << @subject[curr, nxt - curr]
-          if (match = extract_one_string("replacement"))
-            result << match
-            curr = prev_end_index
-          else
-            # no capture index
-            curr = nxt
-          end
-        end
-        result << @subject[curr, current_breadcrumb.subject_index - curr]
-      end
-      advance
-      result
-    end
-
-    # This is LPEG's stringcap (lpcap.c)
-    #
-    # We return the result
-    def extract_string_capture
-      fmt = current_breadcrumb.data.must_be_a(String)
-      the_str_caps = str_caps
-      result = +""
-      idx = -1
-      loop do
-        idx += 1
-        break if idx >= fmt.length
-
-        if fmt[idx] != "%"
-          result << fmt[idx]
-          next
-        end
-
-        idx += 1
-        unless ('0'..'9').include?(fmt[idx])
-          result << fmt[idx]
-          next
-        end
-
-        capture_index = fmt[idx].to_i
-        raise "invalid capture index (#{capture_index})" if capture_index > the_str_caps.size - 1
-
-        str_cap = the_str_caps[capture_index]
-        if str_cap.isstring
-          result << @subject[(str_cap.subject_start)...(str_cap.subject_end)]
-          next
-        end
-
-        cs_index = @breadcrumb_idx
-        @breadcrumb_idx = the_str_caps[capture_index].breadcrumb_idx
-        val = extract_one_string("capture") # lpeg's addonestring, but return instead of appending to b
-        raise "no values in capture index #{capture_index}" unless val
-
-        result << val
-        @breadcrumb_idx = cs_index
-      end
-      result
-    end
-
-    # This is LPEG's addonestring (lpcap.c)
-    #
-    # /*
-    # ** Evaluates a capture and adds its first value to buffer 'b'; returns
-    # ** whether there was a value
-    # */
-    #
-    # We just return the value, or nil if there isn't one
-    def extract_one_string(what)
-      case current_breadcrumb.kind
-      when Capture::STRING
-        extract_string_capture
-      when Capture::SUBST
-        extract_subst_cap
-      else
-        n = push_capture
-        return nil if n.zero?
-
-        pop(n - 1) # just leave one
-        res = pop
-        # LPEG tests the type of this value with lua_isstring, which returns 1 if the value is a string or a number.
-        raise "invalid #{what} value (a #{res.class})" unless res.is_a?(String) || res.is_a?(Numeric)
-
-        res.to_s
-      end
-    end
-
-
-    # In LPEG this logic is split between the main VM loop (lpvm.c) and the runtimecap function (lpcap.c). As noted above, the LPEG
-    # code is complicated by the need to manage references to objects living on the Lua stack to avoid C-side memory leaks. We don't
-    # have to worry about such things
-    #
-    # We start at the CLOSE_RUN_TIME breadcrumb and
-    #  - change the CLOSE_RUN_TIME to a regular CLOSE
-    #  - find the matching OPEN and grab the Proc that we need to call
-    #  - push the nested captures and immediately pop them
-    #  - pass the necessary arguments to proc: the subject, the current posistion, and the just-popped captures
-    #  - clear out all the breadcrumbs after the OPEN
-    #
-    # We return a [bc, result] pair.
-    #  - bc is the new "breadcrumb count" for the VM, as we discard the existing captures for the RunTime grouping.
-    #  - result is the result of the Proc call
-    def run_time_capture
-      seek_matching_open!
-      current_breadcrumb.kind.must_be(Capture::GROUP)
-      open_cap_idx = index
-
-      proc = current_breadcrumb.data.must_be_a(Proc) # get the proc to call
-
-      args = [@subject, @subject_index]
-      n = push_nested_captures
-      args += pop(n) # prepare arguments for the function
-      result = Array(proc.call(*args)) # ... and pass them to the proc
-
-      [open_cap_idx + 1, result]
-    end
-
-    # This is LPEG's getstrcaps (lpcap.c)
-    # /*
-    # ** Collect values from current capture into array 'cps'. Current
-    # ** capture must be Cstring (first call) or Csimple (recursive calls).
-    # ** (In first call, fills %0 with whole match for Cstring.)
-    # ** Returns number of elements in the array that were filled.
-    # */
-    #
-    # We simply return the array of StrAux elements
-    def str_caps
-      result = []
-      first_aux = StrAux.new
-      first_aux.isstring = true
-      first_aux.subject_start = current_breadcrumb.subject_index
-      result << first_aux
-
-      first_is_full = current_breadcrumb.full?
-      if first_is_full
-        result[0].subject_end = current_breadcrumb.end_index
-      else
-        advance # move past the Open
-        until current_breadcrumb.close?
-          if result.size > MAX_STR_CAPS
-            seek_next! # just skip it
-          elsif current_breadcrumb.kind == Capture::STRING
-            result += str_caps # get the matches recursively
-          else
-            # Not a string
-            aux = StrAux.new
-            aux.isstring = false
-            aux.breadcrumb_idx = index
-            seek_next!
-            result << aux
-          end
-        end
-        result[0].subject_end = current_breadcrumb.end_index
-      end
-      advance # skip capture close/full capture
-      result
-    end
-
-    # Search backwards from the current breadcrumb for the start of the group capture with the given name.
-    #
-    # If we find it the state index is updated appropriately.
-    # If we don't find it we raise an exception.
-    #
-    # This is LPEG's findback() (lpcap.c)
-    def seek_back_ref!(group_name)
-      group_name.must_be
-      while @breadcrumb_idx.positive?
-        @breadcrumb_idx -= 1
-        # Skip nested captures
-        if current_breadcrumb.close?
-          seek_matching_open!
-        else
-          # The opening of a capture that encloses the BACKREF. Skip it and keep going backwards
-          next unless current_breadcrumb.full?
-        end
-        # We are at an open capture that was closed before our BACKREF
-        next unless current_breadcrumb.kind == Capture::GROUP # is it a group?
-        next unless current_breadcrumb.data == group_name # does it have the right name?
-
-        # We found it!
-        return
-      end
-      raise "back reference '#{group_name}' not found"
-    end
-
-    # This is LPEG's findopen (lpcap.c)
-    #
-    # Assume we are starting from a close capture. We go back to the matching open capture.
-    def seek_matching_open!
-      n = 0 # number of nested closes waiting for an open
-      loop do
-        @breadcrumb_idx -= 1
-        raise "subject index underflow in seek_open!" if @breadcrumb_idx.negative?
-
-        if current_breadcrumb.close?
-          n += 1
-        elsif !current_breadcrumb.full?
-          # It's an open of some sort
-          return if n.zero?
-
-          n -= 1
-        end
-      end
-    end
-
-    # This is LPEG's nextcap (lpcap.c)
-    #
-    # Move to the next capture
-    def seek_next!
-      unless current_breadcrumb.full?
-        n = 0 # number of nested opens waiting for a close
-        loop do
-          @breadcrumb_idx += 1
-          if current_breadcrumb.close?
-            break if n.zero?
-
-            n -= 1
-          elsif !current_breadcrumb.full?
-            n += 1
-          end
-        end
-      end
-
-      @breadcrumb_idx += 1
-    end
-
-    # partially rotate the captures to make what is currently the final value the n-th from last value. For example, if @captures is
-    # currently [0, 1, 2, 3, 4], then calling munge_last(3) makes it [0, 1, 4, 2, 3]. Now 4 (previously the last value) is third
-    # from last. When n == 1 this is a no-op
-    def munge_last!(n)
-      return if n == 1
-      raise "Bad munge argument" unless n.positive?
-
-      @captures[-n...] = @captures[-n...].rotate(-1)
     end
   end
 end
