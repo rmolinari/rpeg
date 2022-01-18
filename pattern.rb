@@ -55,6 +55,7 @@ require 'must_be'
 #     - headfail(), getFirst(); need to understand them
 #   - profiling
 # - break this file into smaller parts
+# - move the push_* and extract_* methods into the CaptureState class. There's clear feature envy there.
 # - port LPEG's re module
 class Pattern
   NODE_TYPES = %i[
@@ -272,7 +273,7 @@ class Pattern
     def B(patt)
       patt = P(patt)
       len = patt.fixed_len
-      raise "Behind match: pattern may not have fixed length" unless len >= 0
+      raise "Behind match: pattern may not have fixed length" unless len
       raise "Behind match: pattern has captures" if patt.has_captures?
 
       # LPEG puts an upper bound of MAXBEHIND = 255 on how large the match can be here. I think it is because the value is packed
@@ -654,7 +655,7 @@ class Pattern
       # */
       p = child.program
       len = child.fixed_len
-      if len >= 0 && !child.has_captures?
+      if len && !child.has_captures?
         prog += p
         prog << Instruction.new(i::BEHIND, aux: len) if len.positive?
       else
@@ -668,7 +669,7 @@ class Pattern
       prog += child.program
     when CAPTURE
       len = fixed_len
-      if len >= 0 && !child.has_captures?
+      if len && !child.has_captures?
         prog += child.program
         prog << Instruction.new(i::FULL_CAPTURE, data: data, aux: { capture_length: len, kind: capture })
       else
@@ -703,11 +704,11 @@ class Pattern
         # call and we can eliminate the stack push by using a :jump instead of the call. The following :return must remain, as we
         # may reach there via another jump/commit/etc
         offset = start_line - idx
-        if prog[idx + 1] && prog[idx + 1].op_code == :return
-          prog[idx] = Instruction.new(i::JUMP, offset: offset)
-        else
-          prog[idx] = Instruction.new(i::CALL, offset: offset)
-        end
+        prog[idx] = if prog[idx + 1] && prog[idx + 1].op_code == :return
+                      Instruction.new(i::JUMP, offset: offset)
+                    else
+                      Instruction.new(i::CALL, offset: offset)
+                    end
       end
     else
       raise "Unhandled pattern type #{type}"
@@ -746,7 +747,7 @@ class Pattern
           final_final_t = finallabel(program, final_t)
           # The jump becomes that instruction...
           instr = program[final_t].clone
-          # ... but must correct the offset
+          # ... but we must correct the offset
           instr.offset = final_final_t - idx
           program[idx] = instr
           redo # "reoptimize the label"
@@ -1185,7 +1186,7 @@ class Pattern
     # ** number of characters to match a pattern (or -1 if variable)
     # */
     #
-    # We return -Infinity if the node's matches are not all of the same length
+    # We return nil if the node's matches are not all of the same length
     def fixed_len(node)
       minus_infty = -Float::INFINITY
       case node.type
@@ -1198,24 +1199,27 @@ class Pattern
       when NOT, AND, NTRUE, NFALSE, BEHIND
         0
       when REPEATED, OPEN_CALL
-        minus_infty
+        nil
       when CAPTURE, RULE
         fixed_len(node.child)
       when GRAMMAR
         fixed_len(node.child.first) # the first rule is the initial nonterminal
       when CALL
-        call_recursive(node, ->(n) { fixed_len(n) }, minus_infty)
+        call_recursive(node, ->(n) { fixed_len(n) }, nil)
       when SEQ
         left_len = fixed_len(node.left)
-        return left_len if left_len == minus_infty
-
-        left_len + fixed_len(node.right)
-      when ORDERED_CHOICE
-        left_len = fixed_len(node.left)
-        return left_len if left_len == minus_infty
+        return nil unless left_len
 
         right_len = fixed_len(node.right)
-        right_len == left_len ? right_len : minus_infty
+        return nil unless right_len
+
+        left_len + right_len
+      when ORDERED_CHOICE
+        left_len = fixed_len(node.left)
+        return nil unless left_len
+
+        right_len = fixed_len(node.right)
+        right_len == left_len ? right_len : nil
       else
         raise "Unhandled node type #{node.type}"
       end
@@ -1226,7 +1230,7 @@ class Pattern
   # Experimental monkeypatching
   #
   # Very annoyingly, Ruby's #coerce mechanism is only used by the Numeric types. This means it doesn't help with things like "a" +
-  # Pattern.P(true) even though we want the convenience.  The only way I can think to make it work is to monkeypatch String,
+  # Pattern.P(true) even though we want the convenience. The only way I can think to make it work is to monkeypatch String,
   # TrueClass, FalseClass, etc.
 
   # Technique from https://stackoverflow.com/a/61438012/1299011
@@ -1253,7 +1257,7 @@ end
 # - offset: the address offset used in jumps, calls, etc.
 # - aux: extra information used by instruction like capture
 #   - in LPEG this is used to carefully pack data by bit-twiddling, etc., but we can use anything, such as structs, etc., as needed
-# - data: this is called "key" in LPEG and is (I think) used to store pointers to Lua-based objects, etc.
+# - data: this is called "key" in LPEG and is used to store pointers to Lua-based objects, etc.
 #   - we will just store Ruby objects here.
 #   - it contains things like the Set/Range of characters for Charset instructions, the character count for Any instructions, etc.
 class Instruction
@@ -1380,15 +1384,6 @@ class ParsingMachine
     @done
   end
 
-  # TODO
-  #
-  # Instead of pushing clones of the breadcrumbs onto the stack and then restoring the entire data structure we could do what LPEG
-  # does and use a fixed array for the breadcrumbs and push/pop the top-of-stack index. This is safe because, during a successful
-  # match, breadcrumbs are never removed.
-  #
-  # LPEG does it that way - at least in part - because of C's manual memory management requirements, but it is also efficient. This
-  # would save object clones during a run. We would just need to clean things up at the end of the run so we don't have junk entries
-  # at the end of the array when we analyse the breadcrumbs for capture returns.
   def run
     i = Instruction # shorthand
 
@@ -1597,7 +1592,7 @@ class ParsingMachine
   # If there are multiple captures we return them in an array.
   #
   # The capture code in LPEG (mostly in lpcap.c) looks complicated at first but it is made up of a bunch of pieces that each do one
-  # things and coordinate well togehter. Some extra complexity comes from the manual memory management required in C and the need to
+  # thing and coordinate well togehter. Some extra complexity comes from the manual memory management required in C and the need to
   # interact with Lua values - this appears to be especially the case with the Runtime capture code, which is bewildering at first
   # view. Porting it one capture kind at a time let me understand it at some level as I went.
   #
@@ -1780,7 +1775,7 @@ class ParsingMachine
       end
       @capture_state.push named_results.merge
     end
-    1 # we pushed just a single entry, the hash or array
+    1
   end
 
   # This is LPEG's foldcap (lpcap.c)
@@ -1842,7 +1837,7 @@ class ParsingMachine
   # This is LPEG's querycap (lpcap.c)
   def push_query_capture
     hash = @capture_state.current_breadcrumb.data.must_be_a(Hash)
-    push_one_nested_value # /* get nested capture */
+    push_one_nested_value
     query_key = @capture_state.pop # pop it
     result = hash[query_key]
     if result
@@ -1999,7 +1994,7 @@ class ParsingMachine
 
   # q.v. LPEG's CaptureState, lpcap.h
   #
-  # We'll also use this class for seeking operations like findnext findopen, etc.
+  # We'll also use this class for seeking operations like findnext, findopen, etc.
   class CaptureState
     attr_reader :captures
 
