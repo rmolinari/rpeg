@@ -254,43 +254,6 @@ print('+')
 -- bug in 0.10 (rechecking a grammar, after tail-call optimization)
 m.P{ m.P { (m.P(3) + "xuxu")^0 * m.V"xuxu", xuxu = m.P(1) } }
 
-local V = m.V
-
-local Space = m.S(" \n\t")^0
-local Number = m.C(m.R("09")^1) * Space
-local FactorOp = m.C(m.S("+-")) * Space
-local TermOp = m.C(m.S("*/")) * Space
-local Open = "(" * Space
-local Close = ")" * Space
-
-
-local function f_factor (v1, op, v2, d)
-  assert(d == nil)
-  if op == "+" then return v1 + v2
-  else return v1 - v2
-  end
-end
-
-
-local function f_term (v1, op, v2, d)
-  assert(d == nil)
-  if op == "*" then return v1 * v2
-  else return v1 / v2
-  end
-end
-
-G = m.P{ "Exp",
-  Exp = m.Cf(V"Factor" * m.Cg(FactorOp * V"Factor")^0, f_factor);
-  Factor = m.Cf(V"Term" * m.Cg(TermOp * V"Term")^0, f_term);
-  Term = Number / tonumber  +  Open * V"Exp" * Close;
-}
-
-G = Space * G * -1
-
-for _, s in ipairs{" 3 + 5*9 / (1+1) ", "3+4/2", "3+3-3- 9*2+3*9/1-  8"} do
-  assert(m.match(G, s) == loadstring("return "..s)())
-end
-
 
 -- test for grammars (errors deep in calling non-terminals)
 g = m.P{
@@ -513,62 +476,9 @@ checkeq(t, {'ab',
 
 -- tests for match-time captures
 
-p = m.P'a' * (function (s, i) return (s:sub(i, i) == 'b') and i + 1 end)
-  + 'acd'
 
-assert(p:match('abc') == 3)
-assert(p:match('acd') == 4)
 
-local function id (s, i, ...)
-  return true, ...
-end
 
-assert(m.Cmt(m.Cs((m.Cmt(m.S'abc' / { a = 'x', c = 'y' }, id) +
-              m.R'09'^1 /  string.char +
-              m.P(1))^0), id):match"acb98+68c" == "xyb\98+\68y")
-
-p = m.P{'S',
-  S = m.V'atom' * space
-    + m.Cmt(m.Ct("(" * space * (m.Cmt(m.V'S'^1, id) + m.P(true)) * ")" * space), id),
-  atom = m.Cmt(m.C(m.R("AZ", "az", "09")^1), id)
-}
-x = p:match"(a g () ((b) c) (d (e)))"
-checkeq(x, {'a', 'g', {}, {{'b'}, 'c'}, {'d', {'e'}}});
-
-x = {(m.Cmt(1, id)^0):match(string.rep('a', 500))}
-assert(#x == 500)
-
-local function id(s, i, x)
-  if x == 'a' then return i, 1, 3, 7
-  else return nil, 2, 4, 6, 8
-  end   
-end     
-
-p = ((m.P(id) * 1 + m.Cmt(2, id) * 1  + m.Cmt(1, id) * 1))^0
-assert(table.concat{p:match('abababab')} == string.rep('137', 4))
-
-local function ref (s, i, x)
-  return m.match(x, s, i - x:len())
-end
-
-assert(m.Cmt(m.P(1)^0, ref):match('alo') == 4)
-assert((m.P(1) * m.Cmt(m.P(1)^0, ref)):match('alo') == 4)
-assert(not (m.P(1) * m.Cmt(m.C(1)^0, ref)):match('alo'))
-
-ref = function (s,i,x) return i == tonumber(x) and i, 'xuxu' end
-
-assert(m.Cmt(1, ref):match'2')
-assert(not m.Cmt(1, ref):match'1')
-assert(m.Cmt(m.P(1)^0, ref):match'03')
-
-function ref (s, i, a, b)
-  if a == b then return i, a:upper() end
-end
-
-p = m.Cmt(m.C(m.R"az"^1) * "-" * m.C(m.R"az"^1), ref)
-p = (any - p)^0 * p * any^0 * -1
-
-assert(p:match'abbbc-bc ddaa' == 'BC')
 
 do   -- match-time captures cannot be optimized away
   local touch = 0
@@ -592,15 +502,6 @@ do   -- match-time captures cannot be optimized away
   assert(m.match(-f * 'a' + 'b', 'b') == 2); check(1)
   assert(m.match(-f * 'a' + 'b', '') == nil); check(1)
 end
-
-c = '[' * m.Cg(m.P'='^0, "init") * '[' *
-    { m.Cmt(']' * m.C(m.P'='^0) * ']' * m.Cb("init"), function (_, _, s1, s2)
-                                               return s1 == s2 end)
-       + 1 * m.V(1) } / 0
-
-assert(c:match'[==[]]====]]]]==]===[]' == 18)
-assert(c:match'[[]=]====]=]]]==]===[]' == 14)
-assert(not c:match'[[]=]====]=]=]==]===[]')
 
 
 -- old bug: optimization of concat with fail removed match-time capture

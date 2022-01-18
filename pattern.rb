@@ -24,7 +24,6 @@ require 'must_be'
 #       unary (for to_proc) but the Ruby parser doesn't allow its use in general. So I think we're stuck with +.
 #
 # - repeating patterns still use exponentiation, but it now looks like patt**n rather than patt^n because of Ruby's syntax
-#   - so patt**n means
 #
 # - grammars are represented by hashes or arrays. LPEG uses Lua tables (which are a mashup of hashtables and arrays)
 #
@@ -60,7 +59,7 @@ require 'must_be'
 class Pattern
   NODE_TYPES = %i[
     charset string any seq ordered_choice repeated not and
-    ntrue nfalse grammar open_call rule call capture behind
+    ntrue nfalse grammar open_call rule call capture runtime behind
   ].each do |op|
     const_set op.upcase, op
   end
@@ -266,6 +265,29 @@ class Pattern
     # "Table" is a Lua term and is a like a hashtable crossed with an array.
     def Ct(patt)
       Pattern.new(CAPTURE, P(patt), capture: Capture::TABLE)
+    end
+
+    # From LPEG:
+    #
+    #   Creates a match-time capture. Unlike all other captures, this one is evaluated immediately when a match occurs (even if it
+    #   is part of a larger pattern that fails later). It forces the immediate evaluation of all its nested captures and then calls
+    #   function.
+
+    #   The given function gets as arguments the entire subject, the current position (after the match of patt), plus any capture
+    #   values produced by patt.
+
+    #   The first value returned by function defines how the match happens. If the call returns a number, the match succeeds and the
+    #   returned number becomes the new current position. (Assuming a subject s and current position i, the returned number must be
+    #   in the range [i, len(s) + 1].) If the call returns true, the match succeeds without consuming any input. (So, to return true
+    #   is equivalent to return i.) If the call returns false, nil, or no value, the match fails.
+
+    #   Any extra values returned by the function become the values produced by the capture.
+    def Cmt(patt, function)
+      # LPEG uses a separate RUNTIME node type instead of CAPTURE because certain functions, like hascaptures and fixedlen, need
+      # special behavior here. Note
+      #
+      # LPEG also uses "runtime" interally instead of "matchtime". We follow
+      Pattern.new(RUNTIME, P(patt), data: function)
     end
 
     # Returns a pattern that matches only if the input string at the current position is preceded by patt. Pattern patt must match
@@ -578,7 +600,7 @@ class Pattern
     case type
     when CHARSET, STRING, ANY, NTRUE, NFALSE, OPEN_CALL
       0
-    when REPEATED, AND, NOT, CALL, RULE, CAPTURE, BEHIND
+    when REPEATED, AND, NOT, CALL, RULE, CAPTURE, RUNTIME, BEHIND
       1
     when SEQ, ORDERED_CHOICE
       2
@@ -677,6 +699,10 @@ class Pattern
         prog += child.program
         prog << Instruction.new(i::CLOSE_CAPTURE, aux: { capture_length: 0, kind: Capture::CLOSE })
       end
+    when RUNTIME
+      prog << Instruction.new(i::OPEN_CAPTURE, data: data, aux: { capture_length: 0, kind: Capture::GROUP })
+      prog += child.program
+      prog << Instruction.new(i::CLOSE_RUN_TIME, aux: { capture_length: 0, kind: Capture::CLOSE })
     when GRAMMAR
       start_line_of_nonterminal = {}
       full_rule_code = []
@@ -839,6 +865,8 @@ class Pattern
       capture.must_be
     when BEHIND
       data.must_be
+    when RUNTIME
+      data.must_be_a(Proc)
     end
 
     return if type == GRAMMAR
@@ -1019,6 +1047,11 @@ class Pattern
           return true if pred == :nullable
 
           pattern = pattern.child.must_be
+        when RUNTIME
+          # can fail; match empty iff body does
+          return false if pred == :nofail
+
+          pattern = pattern.child.must_be
         when SEQ
           return false unless check_pred(pattern.left, pred)
 
@@ -1074,7 +1107,7 @@ class Pattern
         case pattern.type
         when STRING, CHARSET, ANY, NTRUE, NFALSE, BEHIND
           # no op
-        when NOT, AND, REPEATED, CAPTURE
+        when NOT, AND, REPEATED, CAPTURE, RUNTIME
           # nullable, so keep going
           local_rec.call(pattern.child, num_rules_seen)
         when CALL
@@ -1162,7 +1195,7 @@ class Pattern
     # */
     def has_captures?(node)
       case node.type
-      when CAPTURE
+      when CAPTURE, RUNTIME
         true
       when CALL
         call_recursive(node, ->(n) { has_captures?(n) }, false)
@@ -1188,7 +1221,6 @@ class Pattern
     #
     # We return nil if the node's matches are not all of the same length
     def fixed_len(node)
-      minus_infty = -Float::INFINITY
       case node.type
       when CHARSET
         1
@@ -1198,7 +1230,7 @@ class Pattern
         node.data.length
       when NOT, AND, NTRUE, NFALSE, BEHIND
         0
-      when REPEATED, OPEN_CALL
+      when REPEATED, OPEN_CALL, RUNTIME
         nil
       when CAPTURE, RULE
         fixed_len(node.child)
@@ -1264,7 +1296,7 @@ class Instruction
   OP_CODES = %i[
     char charset any jump choice call return commit back_commit
     partial_commit span op_end fail fail_twice unreachable
-    open_capture close_capture full_capture behind
+    open_capture close_capture close_run_time full_capture behind
   ].each do |op|
     const_set op.upcase, op
   end
@@ -1294,12 +1326,12 @@ class Instruction
     when BEHIND
       str << " #{aux}"
     when CHARSET, SPAN
-      str << " #{data.join}"
+      str << " #{data.to_a.join}"
     when JUMP, CHOICE, CALL, COMMIT, BACK_COMMIT, PARTIAL_COMMIT
       str << " #{offset}"
     when RETURN, OP_END, FAIL, FAIL_TWICE, UNREACHABLE
     # no-op
-    when OPEN_CAPTURE, CLOSE_CAPTURE, FULL_CAPTURE
+    when OPEN_CAPTURE, CLOSE_CAPTURE, FULL_CAPTURE, CLOSE_RUN_TIME
       str << " data:#{data} aux:#{aux}"
     else
       raise "Unhandled op_code #{op_code} in Instruction#to_s"
@@ -1309,14 +1341,14 @@ class Instruction
 end
 
 module Capture
-  KINDS = %i[const position argument simple group backref subst table fold string num query function close].each do |kind|
+  KINDS = %i[const position argument simple group backref subst table fold string num query function close runtime].each do |kind|
     const_set kind.upcase, kind
   end
 
   # Used inside the VM when recording capture information.
   class Breadcrumb
-    attr_reader :subject_index, :data, :kind
-    attr_accessor :size # We update this when converting an open capture into a full capture
+    # From time to time we need to tweak each of these
+    attr_accessor :size, :subject_index, :data, :kind
 
     # q.v. LPEG's Capture struct (lpcap.h)
     #
@@ -1344,8 +1376,9 @@ module Capture
       @subject_index + size - 1
     end
 
+    # Dynamic because of the setters we sometimes use
     def to_s
-      @to_s ||= "Breadcrumb size:#{size} sub_idx:#{subject_index} data:#{data.inspect} kind:#{kind}"
+      "Breadcrumb size:#{size} sub_idx:#{subject_index} data:#{data.inspect} kind:#{kind}"
     end
   end
 end
@@ -1465,6 +1498,13 @@ class ParsingMachine
         # again. For sanity's sake we'll check that the thing we are popping is a :state entry. See Ierusalimschy, 4.4
         _ = pop(:state)
         @i_ptr = :fail
+      when i::CLOSE_RUN_TIME
+        # The LPEG code for runtime captures is very complicated. Reading through it, it appears that the complexity comes from
+        # needing to carefully manage the capture breadcrumbs wrt to the Lua values living on the Lua stack to avoid memory
+        # leaks. We don't have to worry about that here, as everything is in Ruby and we can leave the hard stuff to the garbage
+        # collector. The remaining work is little more than we have with a function capture.
+        result = run_time_capture
+        handle_run_time_capture_result(result)
       when i::OPEN_CAPTURE
         record_capture(instr, size: 0, subject_index: @subject_index)
       when i::CLOSE_CAPTURE
@@ -1504,9 +1544,13 @@ class ParsingMachine
   #
   # In that code, captop points to the "next" or "new" capture info, so captop - 1 is the current top.
   private def record_capture(instr, size:, subject_index:)
-    @breadcrumbs[@bread_count] = Capture::Breadcrumb.new(size, subject_index, instr.data, instr.aux[:kind].must_be)
-    @bread_count += 1
+    add_capture Capture::Breadcrumb.new(size, subject_index, instr.data, instr.aux[:kind].must_be)
     @i_ptr += 1
+  end
+
+  private def add_capture(breadcrumb)
+    @breadcrumbs[@bread_count] = breadcrumb
+    @bread_count += 1
   end
 
   # React to a character match or failure
@@ -1585,6 +1629,76 @@ class ParsingMachine
   ########################################
   # Capture extraction code
 
+  # In LPEG this logic is split between the main VM loop (lpvm.c) and the runtimecap function (lpcap.c). As noted above, the LPEG
+  # code is complicated by the need to manage references to objects living on the Lua stack to avoid C-side memory leaks. We don't
+  # have to worry about such things
+  #
+  # We start at the CLOSE_RUN_TIME breadcrumb and
+  #  - change the CLOSE_RUN_TIME to a regular CLOSE
+  #  - find the matching OPEN and grab the Proc that we need to call
+  #  - push the nested captures and immediately pop them
+  #  - pass the necessary arguments to proc: the subject, the current posistion, and the just-popped captures
+  #  - clear out all the breadcrumbs after the OPEN
+  #  - return the results of the Proc call
+  def run_time_capture
+    # We need point to the close capture we just hit. LPEG is tricksy here: there isn't actually a CLOSE capture/breadcrumb yet, but
+    # the data structure - an array of Capture objects - means that the "next capture" memory be interpreted as a Capture. For once
+    # we have to do something manually that in the C code happens "automatically"
+    add_capture Capture::Breadcrumb.new(0, @subject_index, nil, Capture::CLOSE)
+
+    @capture_state = CaptureState.new(@breadcrumbs[0, @bread_count])
+    @capture_state.index = @bread_count - 1 # point to the CLOSE we just tacked on
+
+    @capture_state.seek_matching_open!
+    @capture_state.current_breadcrumb.kind.must_be(Capture::GROUP)
+    open_cap_idx = @capture_state.index
+
+    proc = @capture_state.current_breadcrumb.data.must_be_a(Proc) # get the proc to call
+
+    args = [@subject, @subject_index]
+    n = push_nested_captures
+    args += @capture_state.pop(n) # prepare arguments for the function
+    result = Array(proc.call(*args)) # ... and pass them to the proc
+
+    # Blast away the breadcrumbs we just worked through, but keep the OPEN
+    @bread_count = open_cap_idx + 1
+    @capture_state = nil # we are done with this
+    result
+  end
+
+  # From the ICloseRuntIme main-loop switch statement in lpvm.c
+  def handle_run_time_capture_result(results)
+    directive, *dyn_captures = results
+    if !directive
+      @i_ptr = :fail
+      return
+    end
+
+    @subject_index = if directive == true
+                       @subject_index
+                     else
+                       directive.must_be_a(Integer)
+                       raise 'invalid position returned by match-time capture' if directive < @subject_index || directive > @subject.size
+
+                       directive
+                     end
+
+    if dyn_captures.empty?
+      # no dynamic captures. Just get rid of the OPEN capture we still have
+      @bread_count -= 1
+    else
+      # This is LPEG's adddyncaptures in lpvm.c
+      @breadcrumbs[@bread_count - 1].data = nil # make the group capture an anonymous group
+      dyn_captures.each do |cap_val|
+        # LPEG uses a special RUNTIME capture kind here to help find these things later if they need to be removed. We don't appear
+        # to need it - we could just use a CONST capture. But let's follow LPEG for sanity's sake.
+        add_capture Capture::Breadcrumb.new(1, @subject_index, cap_val, Capture::RUNTIME)
+      end
+      add_capture Capture::Breadcrumb.new(1, @subject_index, nil, Capture::CLOSE) # close the group
+    end
+    @i_ptr += 1
+  end
+
   # Returns the captures obtained when we ran the machine.
   #
   # If there are no captures we return the final index into the subject string. This is typically one past the matched section.
@@ -1626,7 +1740,7 @@ class ParsingMachine
     breadcrumb = @capture_state.current_breadcrumb
 
     case breadcrumb.kind
-    when Capture::CONST
+    when Capture::CONST, Capture::RUNTIME
       @capture_state.push breadcrumb.data
       @capture_state.advance
       1
@@ -1682,6 +1796,7 @@ class ParsingMachine
       push_function_capture
     when Capture::QUERY
       push_query_capture
+    when Capture::RUNTIME
     else
       raise "Unhandled capture kind #{breadcrumb.kind}"
     end
@@ -2093,14 +2208,12 @@ class ParsingMachine
 
         if current_breadcrumb.close?
           n += 1
-        elsif current_breadcrumb.full?
-          next
+        elsif !current_breadcrumb.full?
+          # It's an open of some sort
+          return if n.zero?
+
+          n -= 1
         end
-
-        # It's a close
-        return if n.zero?
-
-        n -= 1
       end
     end
 

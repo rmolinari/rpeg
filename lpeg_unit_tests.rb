@@ -591,6 +591,106 @@ class TestsFromLpegCode < Test::Unit::TestCase
     assert_nil p.match("011" * 10_001)
   end
 
+  def test_matchtime_captures
+    id = ->(s, i, *rest) { [true, *rest] }
+
+    assert_equal "xyb#{98.chr}+#{68.chr}y",
+                 m.Cmt(
+                   m.Cs(
+                     (m.Cmt(m.S('abc') / { "a" => 'x', 'c' => 'y' }, id) +
+                                            m.R('09')**1 / ->(str) { str.to_i.chr } +
+                      m.P(1)
+                     )**0
+                   ),
+                   id
+                 ).match("acb98+68c")
+
+    patt = m.P({
+                 S: m.V('atom') * space + m.Cmt(m.Ct("(" * space * (m.Cmt(m.V('S')**1, id) + m.P(true)) * ")" * space), id),
+                 atom: m.Cmt(m.C(m.R("AZ", "az", "09")**1), id)
+               })
+    x = patt.match"(a g () ((b) c) (d (e)))"
+    assert_equal ['a', 'g', [], [['b'], 'c'], ['d', ['e']]], x
+
+    x = (m.Cmt(1, id)**0).match('a' * 500)
+    assert_equal 500, x.length
+
+    # A toy numerical parser
+    number = m.C(m.R("09")**1) * space
+    factorOp = m.C(m.S("+-")) * space
+    termOp = m.C(m.S("*/")) * space
+    open = "(" * space
+    close = ")" * space
+
+    f_factor = lambda do |v1, op, v2, d = nil|
+      d.must_be nil
+      return v1 + v2 if op == "+"
+      v1 - v2
+    end
+
+    f_term = lambda do |v1, op, v2, d = nil|
+      d.must_be nil
+      return v1 * v2 if op == "*"
+      v1 / v2
+    end
+
+    g = m.P(
+      { initial: :Exp,
+        Exp: m.Cf(m.V("Factor") * m.Cg(factorOp * m.V("Factor"))**0, f_factor),
+        Factor: m.Cf(m.V("Term") * m.Cg(termOp * m.V("Term"))**0, f_term),
+        Term: number / ->(e) { e.to_i } + open * m.V("Exp") * close
+      }
+    )
+
+    g = space * g * -1
+
+    [" 3 + 5*9 / (1+1) ", "3+4/2", "3+3-3- 9*2+3*9/1-  8"].each do |expr|
+      assert_equal eval(expr), m.match(g, expr)
+    end
+
+    # P(function)
+    # p = m.P'a' * ->(s, i) { s[i-1] == 'b') and i + 1 } + 'acd'
+    # assert_equal 3, p.match('abc')
+    # assert_equal 4, p.match('acd')
+
+    # id = lambda do |s, i, x|
+    #   return [i, 1, 3, 7] if x == 'a'
+    #   [nil, 2, 4, 6, 8]
+    # end
+
+    # p = ((m.P(id) * 1 + m.Cmt(2, id) * 1  + m.Cmt(1, id) * 1))**0
+    # assert_equal "137" * 4, p.match('abababab').join
+
+    ref = ->(s, i, x, *) { m.match(x, s, i - x.length) }
+    assert_equal 3, m.Cmt(m.P(1)**0, ref).match('alo')
+    assert_equal 3, (m.P(1) * m.Cmt(m.P(1)**0, ref)).match('alo')
+    assert_nil (m.P(1) * m.Cmt(m.C(1)**0, ref)).match('alo')
+
+    ref = ->(s, i, x) { [i == x.to_i && i, 'xuxu'] }
+
+    assert m.Cmt(1, ref).match('1')
+    assert_nil m.Cmt(1, ref).match('0')
+    assert m.Cmt(m.P(1)**0, ref).match('02')
+
+    ref = ->(_s, i, a, b) { [i, a.upcase] if a == b }
+    p = m.Cmt(m.C(m.R("az")**1) * "-" * m.C(m.R("az")**1), ref)
+    p = (any - p)**0 * p * any**0 * -1
+    assert_equal "BC", p.match('abbbc-bc ddaa')
+
+    # Lua-style "long strings"
+    c = '[' * m.Cg(m.P('=')**0, "init") * '[' *
+        ([
+           m.Cmt(
+             ']' * m.C(m.P('=')**0) * ']' * m.Cb("init"),
+             ->(_x, _y, s1, s2) { s1 == s2 }
+           ) + 1 * m.V(0)
+         ]) / 0
+
+    assert_equal 17, c.match('[==[]]====]]]]==]===[]')
+    assert_equal 13, c.match('[[]=]====]=]]]==]===[]')
+    assert_nil c.match('[[]=]====]=]=]==]===[]')
+  end
+
   # For isolating a failing test. Run with the -n flag to ruby.
   def test_onceler
   end
@@ -637,4 +737,6 @@ class TestsFromLpegCode < Test::Unit::TestCase
   def alpha; letter + digit + m.R(); end
   def word; alpha**1 * (1 - alpha)**0; end
   def eos; m.P(-1); end
+  def any; m.P(1); end
+  def space; m.S(" \t\n")**0; end
 end
