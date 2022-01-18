@@ -136,7 +136,7 @@ class Pattern
     #
     # ref should be either
     #  - a non-negative integer n, referring to the n-th rule in the grammar (0-based) or
-    #  - a value that will is the key in the final grammar - a Hash - of the rule being referenced
+    #  - a value that will be the key in the final grammar - a Hash or Array- of the rule being referenced
     #    - strings are turned into symbols
     def V(ref)
       ref = ref.to_sym if ref.is_a?(String)
@@ -199,7 +199,6 @@ class Pattern
       values[1...].each do |val|
         patt *= Cc(val)
       end
-
       Cg(patt)
     end
 
@@ -346,7 +345,7 @@ class Pattern
     Pattern.new(SEQ, self, other)
   end
 
-  # p1 + p2 is ordered choice: if p1 matches we match, otherwise try matching on p2
+  # p1 + p2 is ordered choice: if p1 matches we match and never consider p2, otherwise try matching on p2
   def +(other)
     other = fix_type(other)
 
@@ -450,7 +449,7 @@ class Pattern
   def /(other)
     case other
     when String
-      Pattern.new(CAPTURE, self, data:other, capture: Capture::STRING)
+      Pattern.new(CAPTURE, self, data: other, capture: Capture::STRING)
     when Integer
       raise "Cannot use negative number for numbered capture" if other.negative?
 
@@ -755,8 +754,6 @@ class Pattern
           # just optimize the label
           program[idx].offset = final_t - idx
         end
-      else
-        # nothing to do
       end
     end
   end
@@ -764,32 +761,23 @@ class Pattern
   # LPEG's target (lpcode.c)
   #
   # The absolute target of the instruction at index idx
-  def target(code, idx)
-    idx + code[idx].offset
+  def target(program, idx)
+    idx + program[idx].offset
   end
 
   # LPEG's finaltarget (lpcode.c)
   #
-  # /*
-  # ** Find the final [absolute] destination of a sequence of jumps
-  # */
+  # Find the final [absolute] destination of a sequence of jumps
   def finaltarget(program, idx)
-    byebug unless program[idx]
-    while program[idx].op_code == Instruction::JUMP
-      idx = target(program, idx)
-      byebug unless program[idx]
-    end
+    idx = target(program, idx) while program[idx].op_code == Instruction::JUMP
     idx
   end
 
   # LPEG's finallabel (lpcode.c)
   #
-  # /*
-  # ** final label (after traversing any jumps)
-  # */
+  # final label (after traversing any jumps)
   def finallabel(program, idx)
-    byebug if target(program, idx) >= program.size
-    return finaltarget(program, target(program, idx));
+    finaltarget(program, target(program, idx))
   end
 
   ########################################
@@ -1324,22 +1312,11 @@ module Capture
   # Used inside the VM when recording capture information.
   class Breadcrumb
     attr_reader :subject_index, :data, :kind
-    # We update this when converting an open capture into a full capture
-    attr_accessor :size
+    attr_accessor :size # We update this when converting an open capture into a full capture
 
-    # From LPEG:
+    # q.v. LPEG's Capture struct (lpcap.h)
     #
-    # typedef struct Capture {
-    #   const char *s;  /* subject position */
-    #   unsigned short idx;  /* extra info (group name, arg index, etc.) */
-    #   byte kind;  /* kind of capture */
-    #   byte siz;  /* size of full capture + 1 (0 = not a full capture) */
-    # } Capture;
-    #
-    # We use
-    # - size instead of siz
-    # - subject_index instead of s
-    # - data instead of idx.
+    # We use size instead of siz, subject_index instead of s, and data instead of idx.
     def initialize(size, subject_index, data, kind)
       raise "Bad Capture kind #{kind}" unless KINDS.include?(kind)
 
@@ -1350,8 +1327,6 @@ module Capture
     end
 
     # An "open" capture is a "full capture" if it has non-zero size. See isfullcap in lpcap.c
-    #
-    # This feels goofy, but for now I'm following the LPEG capture code as closely as I can
     def full?
       @size.positive?
     end
@@ -1360,8 +1335,7 @@ module Capture
       @kind == CLOSE
     end
 
-    # The index of the end of the match
-    # q.v. LPEG's closeaddr (lpcap.h)
+    # The index of the end of the match, q.v. LPEG's closeaddr (lpcap.h)
     def end_index
       @subject_index + size - 1
     end
@@ -1534,18 +1508,6 @@ class ParsingMachine
   # For this and the handling of the foo_CAPTURE op codes above, see the corresponding LPEG code in lpvm.c
   #
   # In that code, captop points to the "next" or "new" capture info, so captop - 1 is the current top.
-  # Fields:
-  #  - s is the subject index/pos
-  #  - siz is 1 plus the "size" of the capture. A value of 0 indicates an OpenCapture (start of capture)
-  #    - but when we are expecting an OpenCapture and see one with a non-zero size it means we actually have a "full" capture, which
-  #      is a combined open/close. These have a "subject offset" (getoff(p)) that says how long the match is. Westick this value,
-  #      when appropriate, the :capture_length field of the instr.aux hash.
-  #  - idx is the "extra" data provided with the capture instruction, such as a const value represended as a pointer to Lua data.
-  #    - it is often nil/absent
-  #    - for us this comes from the #data field of the instruction
-  #  - kind is the sort of capture it is: const, arg, etc.
-  #
-  # The first two vary with the capture type and are passed in here. The other two come cleanly out of the Instruction.
   private def record_capture(instr, size:, subject_index:)
     @breadcrumbs[@bread_count] = Capture::Breadcrumb.new(size, subject_index, instr.data, instr.aux[:kind].must_be)
     @bread_count += 1
@@ -1631,16 +1593,13 @@ class ParsingMachine
   # Returns the captures obtained when we ran the machine.
   #
   # If there are no captures we return the final index into the subject string. This is typically one past the matched section.
-  # If there is exactly one capture we return it
-  # If there are multiple captures we return them in an array (or perhaps other structures for more complex captures TBD)
+  # If there is exactly one capture we return it.
+  # If there are multiple captures we return them in an array.
   #
-  # The capture code in LPEG is complicated and I don't understand very much of it. I think part of the complexity comes from the
-  # manual memory management required in C and the need to interact with Lua values. All I can think to do is a) implement things in
-  # a way that seems natural to me and that respects the LPEG documentation and tests and b) puzzle through the LPEG code when
-  # necessary.
-  #
-  # The post-run capture retrieval is actually straightforward, at least at the top level: see getcaptures and pushcapture in
-  # lpcap.c. But the code in the VM for ICloseRuntime is terrifying.
+  # The capture code in LPEG (mostly in lpcap.c) looks complicated at first but it is made up of a bunch of pieces that each do one
+  # things and coordinate well togehter. Some extra complexity comes from the manual memory management required in C and the need to
+  # interact with Lua values - this appears to be especially the case with the Runtime capture code, which is bewildering at first
+  # view. Porting it one capture kind at a time let me understand it at some level as I went.
   #
   # Basic model:
   #
@@ -1648,9 +1607,9 @@ class ParsingMachine
   #   anything from the stack: the Captures are breadcrumbs that let us work out after the fact what happend. Things do get removed
   #   from the Capture stack but only at backtrack points because a match has failed.
   # - The End instruction tacks on an unbalanced CloseCapture. This appears to be simply an end-marker like the null string
-  #   terminator.
-  # - After the VM runs we analyze the Breadcrumbs to calculate the captures. We go back and forth through the data, . So isn't not
-  #   a stack, but an array..
+  #   terminator. We don't do this
+  # - After the VM runs we analyze the Breadcrumbs to calculate the captures. We go back and forth through the data. So isn't not a
+  #   stack, but an array.
   #
   # This method plays the same role as LPEG's getcaptures (lpcap.c)
   def captures
@@ -1659,13 +1618,11 @@ class ParsingMachine
     @capture_state = CaptureState.new(@breadcrumbs[0, @bread_count])
 
     push_capture until @capture_state.done?
-
     result = @capture_state.captures
-    if result.size == 1
-      result = result.first
-    elsif result.empty?
-      result = @subject_index
-    end
+
+    return result.first if result.size == 1
+    return @subject_index if result.empty?
+
     result
   end
 
@@ -2025,7 +1982,7 @@ class ParsingMachine
       n = push_capture
       return nil if n.zero?
 
-      @capture_state.pop(n-1) # just leave one
+      @capture_state.pop(n - 1) # just leave one
       res = @capture_state.pop
       # LPEG tests the type of this value with lua_isstring, which returns 1 if the value is a string or a number.
       raise "invalid #{what} value (a #{res.class})" unless res.is_a?(String) || res.is_a?(Numeric)
@@ -2068,7 +2025,7 @@ class ParsingMachine
 
         @captures.pop(num)
       else
-        raise "There is not a capture to pop" unless @captures.size > 0
+        raise "There is not a capture to pop" unless @captures.size.positive?
 
         @captures.pop
       end
@@ -2111,7 +2068,7 @@ class ParsingMachine
     # This is LPEG's findback() (lpcap.c)
     def seek_back_ref!(group_name)
       group_name.must_be
-      while @breadcrumb_idx > 0
+      while @breadcrumb_idx.positive?
         @breadcrumb_idx -= 1
         # Skip nested captures
         if current_breadcrumb.close?
@@ -2137,7 +2094,7 @@ class ParsingMachine
       n = 0 # number of nested closes waiting for an open
       loop do
         @breadcrumb_idx -= 1
-        raise "subject index underflow in seek_open!" if @breadcrumb_idx < 0
+        raise "subject index underflow in seek_open!" if @breadcrumb_idx.negative?
 
         if current_breadcrumb.close?
           n += 1
