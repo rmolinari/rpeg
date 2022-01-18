@@ -480,29 +480,6 @@ checkeq(t, {'ab',
 
 
 
-do   -- match-time captures cannot be optimized away
-  local touch = 0
-  f = m.P(function () touch = touch + 1; return true end)
-
-  local function check(n) n = n or 1; assert(touch == n); touch = 0 end
-
-  assert(m.match(f * false + 'b', 'a') == nil); check()
-  assert(m.match(f * false + 'b', '') == nil); check()
-  assert(m.match( (f * 'a')^0 * 'b', 'b') == 2); check()
-  assert(m.match( (f * 'a')^0 * 'b', '') == nil); check()
-  assert(m.match( (f * 'a')^-1 * 'b', 'b') == 2); check()
-  assert(m.match( (f * 'a')^-1 * 'b', '') == nil); check()
-  assert(m.match( ('b' + f * 'a')^-1 * 'b', '') == nil); check()
-  assert(m.match( (m.P'b'^-1 * f * 'a')^-1 * 'b', '') == nil); check()
-  assert(m.match( (-m.P(1) * m.P'b'^-1 * f * 'a')^-1 * 'b', '') == nil);
-     check()
-  assert(m.match( (f * 'a' + 'b')^-1 * 'b', '') == nil); check()
-  assert(m.match(f * 'a' + f * 'b', 'b') == 2); check(2)
-  assert(m.match(f * 'a' + f * 'b', 'a') == 2); check(1)
-  assert(m.match(-f * 'a' + 'b', 'b') == 2); check(1)
-  assert(m.match(-f * 'a' + 'b', '') == nil); check(1)
-end
-
 
 -- old bug: optimization of concat with fail removed match-time capture
 p = m.Cmt(0, function (s) p = s end) * m.P(false)
@@ -554,13 +531,6 @@ do
   assert(#res == lim and res[1] == lim - 1 and res[lim] == 0)
   checkerr("too many", m.match, manyCmt(2^15), "a")
 end
-
-p = (m.P(function () return true, "a" end) * 'a'
-  + m.P(function (s, i) return i, "aa", 20 end) * 'b'
-  + m.P(function (s,i) if i <= #s then return i, "aaa" end end) * 1)^0
-
-t = {p:match('abacc')}
-checkeq(t, {'a', 'aa', 20, 'a', 'aaa', 'aaa'})
 
 
 -------------------------------------------------------------------

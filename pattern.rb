@@ -48,7 +48,6 @@ require 'must_be'
 #   - Changing the name to "Hash" captures implies an implementation that may not be accurate.
 #
 # TODO:
-# - Match-time captures, Cmt
 # - program generation optimations
 #   - other pattern-based optimizations: need to scan through the LPEG code again
 #     - headfail(), getFirst(); need to understand them
@@ -81,9 +80,6 @@ class Pattern
     end
 
     # Take argument and turn it into a pattern
-    #
-    # TODO (from the lpeg homepage)
-    #  - If the argument is a function, returns a pattern equivalent to a match-time capture over the empty string.
     def P(arg)
       case arg
       when Pattern
@@ -104,14 +100,17 @@ class Pattern
           new(ANY, data: arg)
         else
           # "Does not match n characters"
-          -new(ANY, data: -arg)
+          -P(-arg)
         end
       when FalseClass
-        new(NFALSE)
+        @false_tree ||= new(NFALSE)
       when TrueClass
-        new(NTRUE)
+        @true_tree ||= new(NTRUE)
       when Hash, Array
         new(GRAMMAR, data: arg)
+      when Proc
+        # a pattern equivalent to a match-time capture over the empty string.
+        new(RUNTIME, P(true), data: arg)
       else
         raise "Pattern.P does not support argument #{arg}"
       end

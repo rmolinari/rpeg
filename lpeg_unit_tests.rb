@@ -649,17 +649,17 @@ class TestsFromLpegCode < Test::Unit::TestCase
     end
 
     # P(function)
-    # p = m.P'a' * ->(s, i) { s[i-1] == 'b') and i + 1 } + 'acd'
-    # assert_equal 3, p.match('abc')
-    # assert_equal 4, p.match('acd')
+    p = m.P('a') * ->(s, i, *) { s[i] == 'b' and i + 1 } + 'acd'
+    assert_equal 2, p.match('abc')
+    assert_equal 3, p.match('acd')
 
-    # id = lambda do |s, i, x|
-    #   return [i, 1, 3, 7] if x == 'a'
-    #   [nil, 2, 4, 6, 8]
-    # end
+    id = lambda do |s, i, x|
+      return [i, 1, 3, 7] if x == 'a'
+      [nil, 2, 4, 6, 8]
+    end
 
-    # p = ((m.P(id) * 1 + m.Cmt(2, id) * 1  + m.Cmt(1, id) * 1))**0
-    # assert_equal "137" * 4, p.match('abababab').join
+    p = ((m.P(id) * 1 + m.Cmt(2, id) * 1  + m.Cmt(1, id) * 1))**0
+    assert_equal "137" * 4, p.match('abababab').join
 
     ref = ->(s, i, x, *) { m.match(x, s, i - x.length) }
     assert_equal 3, m.Cmt(m.P(1)**0, ref).match('alo')
@@ -689,6 +689,35 @@ class TestsFromLpegCode < Test::Unit::TestCase
     assert_equal 17, c.match('[==[]]====]]]]==]===[]')
     assert_equal 13, c.match('[[]=]====]=]]]==]===[]')
     assert_nil c.match('[[]=]====]=]=]==]===[]')
+
+    # -- match-time captures cannot be optimized away
+    touch = 0
+    f = m.P(->(*) { touch = touch + 1; true })
+    check = lambda do |n = 1|
+      assert_equal n, touch
+      touch = 0
+    end
+
+    assert_nil m.match(f * false + 'b', 'a'); check.call
+    assert_nil m.match(f * false + 'b', ''); check.call
+    assert_equal 1, m.match( (f * 'a')**0 * 'b', 'b'); check.call
+    assert_nil m.match( (f * 'a')**0 * 'b', ''); check.call
+    assert_equal 1, m.match( (f * 'a')**-1 * 'b', 'b'); check.call
+    assert_nil m.match( (f * 'a')**-1 * 'b', ''); check.call
+    assert_nil m.match( ('b' + f * 'a')**-1 * 'b', ''); check.call
+    assert_nil m.match( (m.P('b')**-1 * f * 'a')**-1 * 'b', ''); check.call
+    assert_nil m.match( (-m.P(1) * m.P('b')**-1 * f * 'a')**-1 * 'b', ''); check.call
+    assert_nil m.match( (f * 'a' + 'b')**-1 * 'b', ''); check.call
+    assert_equal 1, m.match(f * 'a' + f * 'b', 'b'); check.call(2)
+    assert_equal 1, m.match(f * 'a' + f * 'b', 'a'); check.call(1)
+    assert_equal 1, m.match(-f * 'a' + 'b', 'b'); check.call(1)
+    assert_nil m.match(-f * 'a' + 'b', ''); check.call(1)
+
+    p = (m.P(->(*) { [true, "a"] }) * 'a' +
+         m.P(->(s, i, *) { [i, "aa", 20] }) * 'b' +
+         m.P(->(s, i, *) { [i, "aaa"] if i <= s.length} ) * 1)**0
+
+    assert_equal ['a', 'aa', 20, 'a', 'aaa', 'aaa'],  p.match('abacc')
   end
 
   # For isolating a failing test. Run with the -n flag to ruby.
