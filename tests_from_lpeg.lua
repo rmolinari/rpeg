@@ -543,9 +543,6 @@ local match, compile = re.match, re.compile
 
 
 
-assert(match("a", ".") == 2)
-assert(match("a", "''") == 1)
-assert(match("", " ! . ") == 1)
 assert(not match("a", " ! . "))
 assert(match("abcde", "  ( . . ) * ") == 5)
 assert(match("abbcde", " [a-c] +") == 5)

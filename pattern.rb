@@ -86,9 +86,11 @@ class Pattern
       when Pattern
         arg
       when String
-        # match that string exactly. We always match the empty strin
+        # match that string exactly. We always match the empty string
         if arg.empty?
           P(true)
+        elsif arg.size == 1
+          S(arg)
         else
           new(STRING, data: arg)
         end
@@ -523,7 +525,7 @@ class Pattern
     result = []
     do_sub_pattern = lambda do |sub_patt|
       sub_patt.to_s.split("\n").each do |line|
-        result << "  #{line}"
+        result << "|  #{line}"
       end
     end
 
@@ -531,7 +533,7 @@ class Pattern
 
     case type
     when CHARSET
-      result << "CHARSET: #{data.join}"
+      result << "Charset: #{data.join.dump}"
     when STRING, ANY
       result << "#{type_s}: #{data}"
     when NTRUE
@@ -547,7 +549,7 @@ class Pattern
       do_sub_pattern.call(left)
       do_sub_pattern.call(right)
     when REPEATED, NOT, AND, BEHIND
-      result << type_s
+      result << "#{type_s}: "
       do_sub_pattern.call(child)
     when CAPTURE
       result << "Capture: #{capture} #{data.inspect}"

@@ -1,5 +1,6 @@
 require 'test/unit'
 require_relative 'pattern'
+require_relative 're'
 
 require 'byebug'
 
@@ -718,6 +719,12 @@ class TestsFromLpegCode < Test::Unit::TestCase
          m.P(->(s, i, *) { [i, "aaa"] if i <= s.length} ) * 1)**0
 
     assert_equal ['a', 'aa', 20, 'a', 'aaa', 'aaa'],  p.match('abacc')
+  end
+
+  def test_re
+    assert_equal 1, RE.match("a", ".")
+    assert_equal 0, RE.match("a", "''")
+    assert_equal 0, RE.match("", " ! . ")
   end
 
   # For isolating a failing test. Run with the -n flag to ruby.
