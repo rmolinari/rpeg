@@ -614,6 +614,11 @@ class Pattern
   ########################################
   # Code generation
 
+  # Duplicate the code elements to avoid incorrect decoration showing up due to subprogram reuse
+  private def code_for(pattern)
+    pattern.code.map(&:dup)
+  end
+
   def code
     return @code if @code
 
@@ -631,7 +636,7 @@ class Pattern
     when ANY
       code << Instruction.new(i::ANY, data:)
     when SEQ
-      code = left.code + right.code
+      code = code_for(left) + code_for(right)
     when NTRUE
       # we always succeed, which means we don't have to do anything at all
     when NFALSE
@@ -644,15 +649,15 @@ class Pattern
       # This is symbolic target for now. It will be converted to a numeric offset during GRAMMAR analysis
       code << Instruction.new(i::CALL, offset: data)
     when ORDERED_CHOICE
-      p1 = left.code
-      p2 = right.code
+      p1 = code_for(left)
+      p2 = code_for(right)
 
       code << Instruction.new(i::CHOICE, offset: 2 + p1.size)
       code += p1
       code << Instruction.new(i::COMMIT, offset: 1 + p2.size)
       code += p2
     when REPEATED
-      p = child.code
+      p = code_for(child)
 
       if child.type == CHARSET
         # Special, quicker handling when the thing we are repeated over is a charset. See Ierusalimschy 4.3
@@ -663,7 +668,7 @@ class Pattern
         code << Instruction.new(i::PARTIAL_COMMIT, offset: -p.size)
       end
     when NOT
-      p = child.code
+      p = code_for(child)
 
       code << Instruction.new(i::CHOICE, offset: 2 + p.size)
       code += p
@@ -675,11 +680,11 @@ class Pattern
       # ** optimization: fixedlen(p) = n ==> <&p> == <p>; behind n
       # ** (valid only when 'p' has no captures)
       # */
-      p = child.code
+      p = code_for(child)
       len = child.fixed_len
       if len && !child.has_captures?
         code += p
-        code << Instruction.new(i::BEHIND, aux: len) if len.positive?
+        code << Instruction.new(i::BEHIND, aux: len, dec: :and) if len.positive?
       else
         code << Instruction.new(i::CHOICE, offset: 2 + p.size)
         code += p
@@ -688,31 +693,36 @@ class Pattern
       end
     when BEHIND
       code << Instruction.new(i::BEHIND, aux: data) if data.positive?
-      code += child.code
+      code += code_for(child)
     when CAPTURE
+      c = code_for(child)
       len = fixed_len
       if len && !child.has_captures?
-        code += child.code
+        code += c
         code << Instruction.new(i::FULL_CAPTURE, data:, aux: { capture_length: len, kind: capture })
       else
         code << Instruction.new(i::OPEN_CAPTURE, data:, aux: { kind: capture })
-        code += child.code
+        code += c
         code << Instruction.new(i::CLOSE_CAPTURE, aux: { kind: Capture::CLOSE })
       end
     when RUNTIME
       code << Instruction.new(i::OPEN_CAPTURE, data:, aux: { kind: Capture::GROUP })
-      code += child.code
+      code += code_for(child)
       code << Instruction.new(i::CLOSE_RUN_TIME, aux: { kind: Capture::CLOSE })
+    when RULE
+      code = code_for(child)
+      code.first.dec = data # decorate with the nonterminal
     when GRAMMAR
       start_line_of_nonterminal = {}
       full_rule_code = []
 
       child.each do |rule|
+        # byebug if $do_it
         nonterminal = rule.data
-        rule_pattern = rule.left
         start_line_of_nonterminal[nonterminal] = 2 + full_rule_code.size
-        full_rule_code += rule_pattern.code + [Instruction.new(i::RETURN)]
+        full_rule_code += code_for(rule) + [Instruction.new(i::RETURN)]
       end
+
 
       code << Instruction.new(i::CALL, offset: data) # call the nonterminal, in @data by fix_up_grammar
       code << Instruction.new(i::JUMP, offset: 1 + full_rule_code.size) # we are done: jump to the line after the grammar's coderam
@@ -730,10 +740,11 @@ class Pattern
         # call and we can eliminate the stack push by using a :jump instead of the call. The following :return must remain, as we
         # may reach there via another jump/commit/etc
         offset = start_line - idx
+        dec = "->#{nonterminal}"
         code[idx] = if code[idx + 1] && code[idx + 1].op_code == :return
-                      Instruction.new(i::JUMP, offset:)
+                      Instruction.new(i::JUMP, offset:, dec:)
                     else
-                      Instruction.new(i::CALL, offset:)
+                      Instruction.new(i::CALL, offset:, dec:)
                     end
       end
     else

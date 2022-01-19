@@ -9,6 +9,7 @@ require_relative 'captures'
 # - data: this is called "key" in LPEG and is used to store pointers to Lua-based objects, etc.
 #   - we will just store Ruby objects here.
 #   - it contains things like the Set/Range of characters for Charset instructions, the character count for Any instructions, etc.
+# - dec[oration]: other things like labels that might be useful later in debugging, etc.
 class Instruction
   OP_CODES = %i[
     char charset any jump choice call return commit back_commit
@@ -19,37 +20,40 @@ class Instruction
   end
 
   OP_WIDTH = OP_CODES.map(&:length).max
+  DECORATION_WIDTH = 15
 
   attr_reader :op_code, :data, :aux
-  attr_accessor :offset
+  attr_accessor :offset, :dec
 
-  def initialize(op_code, offset: nil, data: nil, aux: nil)
+  def initialize(op_code, offset: nil, data: nil, aux: nil, dec: nil)
     raise "Bad instruction op_code #{op_code}" unless OP_CODES.include?(op_code)
 
     @op_code = op_code
     @offset = offset
     @data = data
     @aux = aux
+    @dec = dec
   end
 
   def to_s
     return @to_s if @to_s
 
-    str = op_code.to_s.rjust(OP_WIDTH + 1)
+    str = (dec || "").to_s.rjust(DECORATION_WIDTH) + " :"
+    str << op_code.to_s.upcase.rjust(OP_WIDTH + 1)
 
     case op_code
     when CHAR, ANY
-      str << " #{data}"
+      str << "  #{data}"
     when BEHIND
-      str << " #{aux}"
+      str << "  #{aux}"
     when CHARSET, SPAN
-      str << " #{data.to_a.join.dump}"
+      str << "  #{data.to_a.join.dump}"
     when JUMP, CHOICE, CALL, COMMIT, BACK_COMMIT, PARTIAL_COMMIT
-      str << " #{offset}"
+      str << "  #{offset}"
     when RETURN, OP_END, FAIL, FAIL_TWICE, UNREACHABLE
     # no-op
     when OPEN_CAPTURE, CLOSE_CAPTURE, FULL_CAPTURE, CLOSE_RUN_TIME
-      str << " data:#{data} aux:#{aux}"
+      str << "  data:#{data}, aux:#{aux}"
     else
       raise "Unhandled op_code #{op_code} in Instruction#to_s"
     end
@@ -93,6 +97,8 @@ class ParsingMachine
 
   def run
     i = Instruction # shorthand
+
+    byebug if $do_it
 
     loop do
       return if done?

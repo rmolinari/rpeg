@@ -722,7 +722,9 @@ class TestsFromLpegCode < Test::Unit::TestCase
   end
 
   def test_re
+    $do_it = true
     assert_equal 1, RE.match("a", ".")
+    $do_it = false
     assert_equal 0, RE.match("a", "''")
     assert_equal 0, RE.match("", " ! . ")
 
