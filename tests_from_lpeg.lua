@@ -542,41 +542,6 @@ local re = require "re"
 local match, compile = re.match, re.compile
 
 
-
-assert(not match("a", " ! . "))
-assert(match("abcde", "  ( . . ) * ") == 5)
-assert(match("abbcde", " [a-c] +") == 5)
-assert(match("0abbc1de", "'0' [a-c]+ '1'") == 7)
-assert(match("0zz1dda", "'0' [^a-c]+ 'a'") == 8)
-assert(match("abbc--", " [a-c] + +") == 5)
-assert(match("abbc--", " [ac-] +") == 2)
-assert(match("abbc--", " [-acb] + ") == 7)
-assert(not match("abbcde", " [b-z] + "))
-assert(match("abb\"de", '"abb"["]"de"') == 7)
-assert(match("abceeef", "'ac' ? 'ab' * 'c' { 'e' * } / 'abceeef' ") == "eee")
-assert(match("abceeef", "'ac'? 'ab'* 'c' { 'f'+ } / 'abceeef' ") == 8)
-
-assert(re.match("aaand", "[a]^2") == 3)
-
-local t = {match("abceefe", "( ( & 'e' {} ) ? . ) * ")}
-checkeq(t, {4, 5, 7})
-local t = {match("abceefe", "((&&'e' {})? .)*")}
-checkeq(t, {4, 5, 7})
-local t = {match("abceefe", "( ( ! ! 'e' {} ) ? . ) *")}
-checkeq(t, {4, 5, 7})
-local t = {match("abceefe", "(( & ! & ! 'e' {})? .)*")}
-checkeq(t, {4, 5, 7})
-
-assert(match("cccx" , "'ab'? ('ccc' / ('cde' / 'cd'*)? / 'ccc') 'x'+") == 5)
-assert(match("cdx" , "'ab'? ('ccc' / ('cde' / 'cd'*)? / 'ccc') 'x'+") == 4)
-assert(match("abcdcdx" , "'ab'? ('ccc' / ('cde' / 'cd'*)? / 'ccc') 'x'+") == 8)
-
-assert(match("abc", "a <- (. a)?") == 4)
-b = "balanced <- '(' ([^()] / balanced)* ')'"
-assert(match("(abc)", b))
-assert(match("(a(b)((c) (d)))", b))
-assert(not match("(a(b ((c) (d)))", b))
-
 b = compile[[  balanced <- "(" ([^()] / balanced)* ")" ]]
 assert(b == m.P(b))
 assert(b:match"((((a))(b)))")

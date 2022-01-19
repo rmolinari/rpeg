@@ -91,7 +91,7 @@ module RE
     end
     predef = x
 
-    p_I = m.P(->(s,i) { print "#{i}   #{s[0, i-2]}"; return i }) # Diagnostic?
+    # p_I = m.P(->(s,i) { print "#{i}   #{s[0, i-2]}"; return i }) # Diagnostic?
     name = m.R("AZ", "az", "__") * m.R("AZ", "az", "__", "09")**0
     p_S = (predef[:space] + "--" * (any - predef[:nl])**0)**0
 
@@ -166,7 +166,7 @@ module RE
 
     # local function firstdef (n, r) return adddef({n}, n, r) end
     # Is this right?
-    firstdef = ->(n, r) { adddef({0 => n}, n, r) }
+    firstdef = ->(n, r) { adddef.call({}, n, r) }
 
     f_NT = lambda do |n, b|
       raise "rule '#{n}' used outside a grammar" unless b
@@ -182,6 +182,7 @@ module RE
     patt_mul = ->(p1, p2) { p1 * p2 }
     patt_rpt = ->(p1, n)  { p1**n }
     patt_replace = ->(p1, x) { p1 / x }
+    pos_capture = ->(*) { m.Cp }
 
     call_patt = lambda do |fun|
       ->(*args) { Pattern.send(fun, *args) }
@@ -223,7 +224,7 @@ module RE
           defined +
           "{:" * (name * ":" + m.Cc(nil)) * m.V("Exp") * ":}" / ->(n, p) { m.Cg(p, n) } +
           "=" * name / ->(n) { m.Cmt(m.Cb(n), ->(*args) { equalcap[*args] }) } +
-          m.P("{}") / call_patt.call(:Cp) +
+          m.P("{}") / pos_capture +
           "{~" * m.V("Exp") * "~}" / call_patt.call(:Cs) +
           "{|" * m.V("Exp") * "|}" / call_patt.call(:Ct) +
           "{" * m.V("Exp") * "}" / call_patt.call(:C) +

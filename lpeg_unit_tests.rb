@@ -725,6 +725,37 @@ class TestsFromLpegCode < Test::Unit::TestCase
     assert_equal 1, RE.match("a", ".")
     assert_equal 0, RE.match("a", "''")
     assert_equal 0, RE.match("", " ! . ")
+
+    assert_nil RE.match("a", " ! . ")
+    assert_equal 4, RE.match("abcde", "  ( . . ) * ")
+    assert_equal 4, RE.match("abbcde", " [a-c] +")
+    assert_equal 6, RE.match("0abbc1de", "'0' [a-c]+ '1'")
+    assert_equal 7, RE.match("0zz1dda", "'0' [^a-c]+ 'a'")
+    assert_equal 4, RE.match("abbc--", " [a-c] + +")
+    assert_equal 1, RE.match("abbc--", " [ac-] +")
+    assert_equal 6, RE.match("abbc--", " [-acb] + ")
+    assert_nil RE.match("abbcde", " [b-z] + ")
+    assert_equal 6, RE.match("abb\"de", '"abb"["]"de"')
+    assert_equal 'eee', RE.match("abceeef", "'ac' ? 'ab' * 'c' { 'e' * } / 'abceeef' ")
+    assert_equal 7, RE.match("abceeef", "'ac'? 'ab'* 'c' { 'f'+ } / 'abceeef' ")
+
+    assert_equal 2, RE.match("aaand", "[a]^2")
+
+    assert_equal [3, 4, 6], RE.match("abceefe", "( ( & 'e' {} ) ? . ) * ")
+    assert_equal [3, 4, 6], RE.match("abceefe", "((&&'e' {})? .)*")
+    assert_equal [3, 4, 6], RE.match("abceefe", "( ( ! ! 'e' {} ) ? . ) *")
+    assert_equal [3, 4, 6], RE.match("abceefe", "(( & ! & ! 'e' {})? .)*")
+
+    assert_equal 4, RE.match("cccx" , "'ab'? ('ccc' / ('cde' / 'cd'*)? / 'ccc') 'x'+")
+    assert_equal 3, RE.match("cdx" , "'ab'? ('ccc' / ('cde' / 'cd'*)? / 'ccc') 'x'+")
+    assert_equal 7, RE.match("abcdcdx" , "'ab'? ('ccc' / ('cde' / 'cd'*)? / 'ccc') 'x'+")
+
+    # TODO: get these to pass. Problems with a Grammar?
+    # assert_equal 3, RE.match("abc", "a <- (. a)?")
+    # b = "balanced <- '(' ([^()] / balanced)* ')'"
+    # assert RE.match("(abc)", b)
+    # assert RE.match("(a(b)((c) (d)))", b)
+    # assert_nil RE.match("(a(b ((c) (d)))", b)
   end
 
   # For isolating a failing test. Run with the -n flag to ruby.
