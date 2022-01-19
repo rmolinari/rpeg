@@ -332,9 +332,9 @@ class Pattern
   # init: the string index to start at, defaulting to 0
   # extra_args: used by Argument Captures
   def match(str, init = 0, *extra_args)
-    prog = optimize_jumps(program + [Instruction.new(Instruction::OP_END)])
+    @program ||= optimize_jumps(code + [Instruction.new(Instruction::OP_END)])
 
-    machine = ParsingMachine.new(prog, str, init, extra_args)
+    machine = ParsingMachine.new(@program, str, init, extra_args)
     machine.run
 
     return machine.captures if machine.success?
@@ -612,60 +612,60 @@ class Pattern
   ########################################
   # Code generation
 
-  def program
-    return @program if @program
+  def code
+    return @code if @code
 
     # shorthand
     i = Instruction
 
-    prog = []
+    code = []
     case type
     when CHARSET
-      prog << Instruction.new(i::CHARSET, data: Set.new(data))
+      code << Instruction.new(i::CHARSET, data: Set.new(data))
     when STRING
       data.chars.each do |ch|
-        prog << Instruction.new(i::CHAR, data: ch)
+        code << Instruction.new(i::CHAR, data: ch)
       end
     when ANY
-      prog << Instruction.new(i::ANY, data:)
+      code << Instruction.new(i::ANY, data:)
     when SEQ
-      prog = left.program + right.program
+      code = left.code + right.code
     when NTRUE
       # we always succeed, which means we don't have to do anything at all
     when NFALSE
-      prog << Instruction.new(i::FAIL)
+      code << Instruction.new(i::FAIL)
     when OPEN_CALL
       # we resolved these to CALL when the grammar node was created. So if we see one now it is because it was not contained in a
       # grammar.
       raise 'OPEN_CALL node appears outside of a grammar'
     when CALL
       # This is symbolic target for now. It will be converted to a numeric offset during GRAMMAR analysis
-      prog << Instruction.new(i::CALL, offset: data)
+      code << Instruction.new(i::CALL, offset: data)
     when ORDERED_CHOICE
-      p1 = left.program
-      p2 = right.program
+      p1 = left.code
+      p2 = right.code
 
-      prog << Instruction.new(i::CHOICE, offset: 2 + p1.size)
-      prog += p1
-      prog << Instruction.new(i::COMMIT, offset: 1 + p2.size)
-      prog += p2
+      code << Instruction.new(i::CHOICE, offset: 2 + p1.size)
+      code += p1
+      code << Instruction.new(i::COMMIT, offset: 1 + p2.size)
+      code += p2
     when REPEATED
-      p = child.program
+      p = child.code
 
       if child.type == CHARSET
         # Special, quicker handling when the thing we are repeated over is a charset. See Ierusalimschy 4.3
-        prog << Instruction.new(i::SPAN, data: child.data)
+        code << Instruction.new(i::SPAN, data: child.data)
       else
-        prog << Instruction.new(i::CHOICE, offset: 2 + p.size)
-        prog += p
-        prog << Instruction.new(i::PARTIAL_COMMIT, offset: -p.size)
+        code << Instruction.new(i::CHOICE, offset: 2 + p.size)
+        code += p
+        code << Instruction.new(i::PARTIAL_COMMIT, offset: -p.size)
       end
     when NOT
-      p = child.program
+      p = child.code
 
-      prog << Instruction.new(i::CHOICE, offset: 2 + p.size)
-      prog += p
-      prog << Instruction.new(i::FAIL_TWICE)
+      code << Instruction.new(i::CHOICE, offset: 2 + p.size)
+      code += p
+      code << Instruction.new(i::FAIL_TWICE)
     when AND
       # LPEG:
       # /*
@@ -673,34 +673,34 @@ class Pattern
       # ** optimization: fixedlen(p) = n ==> <&p> == <p>; behind n
       # ** (valid only when 'p' has no captures)
       # */
-      p = child.program
+      p = child.code
       len = child.fixed_len
       if len && !child.has_captures?
-        prog += p
-        prog << Instruction.new(i::BEHIND, aux: len) if len.positive?
+        code += p
+        code << Instruction.new(i::BEHIND, aux: len) if len.positive?
       else
-        prog << Instruction.new(i::CHOICE, offset: 2 + p.size)
-        prog += p
-        prog << Instruction.new(i::BACK_COMMIT, offset: 2)
-        prog << Instruction.new(i::FAIL)
+        code << Instruction.new(i::CHOICE, offset: 2 + p.size)
+        code += p
+        code << Instruction.new(i::BACK_COMMIT, offset: 2)
+        code << Instruction.new(i::FAIL)
       end
     when BEHIND
-      prog << Instruction.new(i::BEHIND, aux: data) if data.positive?
-      prog += child.program
+      code << Instruction.new(i::BEHIND, aux: data) if data.positive?
+      code += child.code
     when CAPTURE
       len = fixed_len
       if len && !child.has_captures?
-        prog += child.program
-        prog << Instruction.new(i::FULL_CAPTURE, data:, aux: { capture_length: len, kind: capture })
+        code += child.code
+        code << Instruction.new(i::FULL_CAPTURE, data:, aux: { capture_length: len, kind: capture })
       else
-        prog << Instruction.new(i::OPEN_CAPTURE, data:, aux: { kind: capture })
-        prog += child.program
-        prog << Instruction.new(i::CLOSE_CAPTURE, aux: { kind: Capture::CLOSE })
+        code << Instruction.new(i::OPEN_CAPTURE, data:, aux: { kind: capture })
+        code += child.code
+        code << Instruction.new(i::CLOSE_CAPTURE, aux: { kind: Capture::CLOSE })
       end
     when RUNTIME
-      prog << Instruction.new(i::OPEN_CAPTURE, data:, aux: { kind: Capture::GROUP })
-      prog += child.program
-      prog << Instruction.new(i::CLOSE_RUN_TIME, aux: { kind: Capture::CLOSE })
+      code << Instruction.new(i::OPEN_CAPTURE, data:, aux: { kind: Capture::GROUP })
+      code += child.code
+      code << Instruction.new(i::CLOSE_RUN_TIME, aux: { kind: Capture::CLOSE })
     when GRAMMAR
       start_line_of_nonterminal = {}
       full_rule_code = []
@@ -709,15 +709,15 @@ class Pattern
         nonterminal = rule.data
         rule_pattern = rule.left
         start_line_of_nonterminal[nonterminal] = 2 + full_rule_code.size
-        full_rule_code += rule_pattern.program + [Instruction.new(i::RETURN)]
+        full_rule_code += rule_pattern.code + [Instruction.new(i::RETURN)]
       end
 
-      prog << Instruction.new(i::CALL, offset: data) # call the nonterminal, in @data by fix_up_grammar
-      prog << Instruction.new(i::JUMP, offset: 1 + full_rule_code.size) # we are done: jump to the line after the grammar's program
-      prog += full_rule_code
+      code << Instruction.new(i::CALL, offset: data) # call the nonterminal, in @data by fix_up_grammar
+      code << Instruction.new(i::JUMP, offset: 1 + full_rule_code.size) # we are done: jump to the line after the grammar's coderam
+      code += full_rule_code
 
       # Now close the CALL instructions.
-      prog.each_with_index do |instr, idx|
+      code.each_with_index do |instr, idx|
         next unless instr.op_code == CALL
 
         nonterminal = instr.offset # still symbolic
@@ -728,7 +728,7 @@ class Pattern
         # call and we can eliminate the stack push by using a :jump instead of the call. The following :return must remain, as we
         # may reach there via another jump/commit/etc
         offset = start_line - idx
-        prog[idx] = if prog[idx + 1] && prog[idx + 1].op_code == :return
+        code[idx] = if code[idx + 1] && code[idx + 1].op_code == :return
                       Instruction.new(i::JUMP, offset:)
                     else
                       Instruction.new(i::CALL, offset:)
@@ -738,7 +738,7 @@ class Pattern
       raise "Unhandled pattern type #{type}"
     end
 
-    @program = prog.freeze
+    @code = code.freeze
   end
 
   # LPEG's peephole (lpcode.c)
