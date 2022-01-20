@@ -60,7 +60,7 @@ module RE
   end
 
   # How to expose?
-  private def set_up_things
+  private def internals
     m = Pattern
 
     any = m.P(1)
@@ -245,5 +245,5 @@ module RE
     p_S * m.Cg(m.Cc(false), "G") * exp / call_patt.call(:P) * (-any + patt_error)
   end
 
-  PATTERN = set_up_things
+  PATTERN = internals
 end

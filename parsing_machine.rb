@@ -96,121 +96,121 @@ class ParsingMachine
   end
 
   def run
+    step until done?
+  end
+
+  def step
+    raise "Cannot step: already done" if done?
+
     i = Instruction # shorthand
 
-    byebug if $do_it
+    if @i_ptr == :fail
+      handle_fail_ptr
+      return
+    end
 
-    loop do
-      return if done?
+    raise "current instruction pointer #{@i_ptr} is negative" if @i_ptr.negative?
 
-      if @i_ptr == :fail
-        handle_fail_ptr
-        next
-      end
+    instr = @program[@i_ptr]
 
-      raise "current instruction pointer #{@i_ptr} is negative" if @i_ptr.negative?
-
-      instr = @program[@i_ptr]
-
-      case instr.op_code
-      when i::CHAR
-        check_char(instr.data == @subject[@subject_index])
-      when i::CHARSET
-        check_char(instr.data.include?(@subject[@subject_index]))
-      when i::ANY
-        if @subject_index + instr.data <= @subject.size
-          @i_ptr += 1
-          @subject_index += instr.data
-        else
-          @i_ptr = :fail
-        end
-      when i::JUMP
-        @i_ptr += instr.offset
-      when i::CHOICE
-        # We push the offset for the other side of the choice
-        push(:state, instr.offset)
+    case instr.op_code
+    when i::CHAR
+      check_char(instr.data == @subject[@subject_index])
+    when i::CHARSET
+      check_char(instr.data.include?(@subject[@subject_index]))
+    when i::ANY
+      if @subject_index + instr.data <= @subject.size
         @i_ptr += 1
-      when i::CALL
-        # Call is like jump, but we push the return address onto the stack first
-        push(:instruction, 1)
-        @i_ptr += instr.offset
-      when i::RETURN
-        @i_ptr = pop(:instruction).i_ptr
-      when i::COMMIT
-        # we pop and discard the top of the stack (which must be a full state) and then do the jump given by arg1. Even though we
-        # are discarding it check that it was a full state for sanity.
-        _ = pop(:state)
-        @i_ptr += instr.offset
-      when i::PARTIAL_COMMIT
-        # Sort of a combination of commit (which pops) and choice (which pushes), but we just tweak the top of the stack. See
-        # Ierusalimschy, sec 4.3
-        stack_top = peek(:state)
-        raise "Empty stack for partial commit!" unless stack_top
-
-        stack_top.subject_index = @subject_index
-        stack_top.bread_count = @bread_count
-        @i_ptr += instr.offset
-      when i::BACK_COMMIT
-        # A combination of a fail and a commit. We backtrack, but then jump to the specified instruction rather than using the
-        # backtrack label. It's used for the AND pattern. See Ierusalimschy, 4.4
-        stack_top = pop(:state)
-        @subject_index = stack_top.subject_index
-        @bread_count = stack_top.bread_count
-        @i_ptr += instr.offset
-      when i::SPAN
-        # Special instruction for when we are repeating over a charset, which is common. We just consume as many maching characters
-        # as there are. This never fails as we can always match at least zero.
-        @subject_index += 1 while instr.data.include?(@subject[@subject_index])
-        @i_ptr += 1
-      when i::BEHIND
-        n = instr.aux # the (fixed) length of the pattern we want to match.
-        if n > @subject_index
-          # We can't jump back in the index so far
-          @i_ptr = :fail
-        else
-          @subject_index -= n
-          @i_ptr += 1
-        end
-      when i::FAIL
-        @i_ptr = :fail
-      when i::FAIL_TWICE
-        # An optimization for the NOT implementation. We pop the top of the stack and discard it, and then enter the fail routine
-        # again. For sanity's sake we'll check that the thing we are popping is a :state entry. See Ierusalimschy, 4.4
-        _ = pop(:state)
-        @i_ptr = :fail
-      when i::CLOSE_RUN_TIME
-        # The LPEG code for runtime captures is very complicated. Reading through it, it appears that the complexity comes from
-        # needing to carefully manage the capture breadcrumbs wrt to the Lua values living on the Lua stack to avoid memory
-        # leaks. We don't have to worry about that here, as everything is in Ruby and we can leave the hard stuff to the garbage
-        # collector. The remaining work is little more than we have with a function capture.
-        result = run_time_capture
-        handle_run_time_capture_result(result)
-      when i::OPEN_CAPTURE
-        record_capture(instr, size: 0, subject_index: @subject_index)
-      when i::CLOSE_CAPTURE
-        # As in LPEG: "if possible, turn capture into a full capture"
-        raise "Close capture without an open" unless @bread_count.positive?
-
-        lc = @breadcrumbs[@bread_count - 1].must_be # still on the breadcrumb list
-        if lc.size.zero? && (@subject_index - lc.subject_index) < 255 # TODO: should we care about an upper bound here?
-          # The previous breadcrumb was an OPEN, and we are closing it
-          lc.size = @subject_index - lc.subject_index + 1
-          @i_ptr += 1
-        else
-          record_capture(instr, size: 1, subject_index: @subject_index)
-        end
-      when i::FULL_CAPTURE
-        # We have an all-in-one match, and the "capture length" tells us how far back in the subject the match started.
-        len = (instr.aux[:capture_length] || 0).must_be(Integer)
-        record_capture(instr, size: 1 + len, subject_index: @subject_index - len)
-      when i::OP_END
-        @success = true
-        done!
-      when i::UNREACHABLE
-        raise "VM reached :unreachable instruction at line #{@i_ptr}"
+        @subject_index += instr.data
       else
-        raise "Unhandled op code #{instr.op_code}"
+        @i_ptr = :fail
       end
+    when i::JUMP
+      @i_ptr += instr.offset
+    when i::CHOICE
+      # We push the offset for the other side of the choice
+      push(:state, instr.offset)
+      @i_ptr += 1
+    when i::CALL
+      # Call is like jump, but we push the return address onto the stack first
+      push(:instruction, 1)
+      @i_ptr += instr.offset
+    when i::RETURN
+      @i_ptr = pop(:instruction).i_ptr
+    when i::COMMIT
+      # we pop and discard the top of the stack (which must be a full state) and then do the jump given by arg1. Even though we
+      # are discarding it check that it was a full state for sanity.
+      _ = pop(:state)
+      @i_ptr += instr.offset
+    when i::PARTIAL_COMMIT
+      # Sort of a combination of commit (which pops) and choice (which pushes), but we just tweak the top of the stack. See
+      # Ierusalimschy, sec 4.3
+      stack_top = peek(:state)
+      raise "Empty stack for partial commit!" unless stack_top
+
+      stack_top.subject_index = @subject_index
+      stack_top.bread_count = @bread_count
+      @i_ptr += instr.offset
+    when i::BACK_COMMIT
+      # A combination of a fail and a commit. We backtrack, but then jump to the specified instruction rather than using the
+      # backtrack label. It's used for the AND pattern. See Ierusalimschy, 4.4
+      stack_top = pop(:state)
+      @subject_index = stack_top.subject_index
+      @bread_count = stack_top.bread_count
+      @i_ptr += instr.offset
+    when i::SPAN
+      # Special instruction for when we are repeating over a charset, which is common. We just consume as many maching characters
+      # as there are. This never fails as we can always match at least zero.
+      @subject_index += 1 while instr.data.include?(@subject[@subject_index])
+      @i_ptr += 1
+    when i::BEHIND
+      n = instr.aux # the (fixed) length of the pattern we want to match.
+      if n > @subject_index
+        # We can't jump back in the index so far
+        @i_ptr = :fail
+      else
+        @subject_index -= n
+        @i_ptr += 1
+      end
+    when i::FAIL
+      @i_ptr = :fail
+    when i::FAIL_TWICE
+      # An optimization for the NOT implementation. We pop the top of the stack and discard it, and then enter the fail routine
+      # again. For sanity's sake we'll check that the thing we are popping is a :state entry. See Ierusalimschy, 4.4
+      _ = pop(:state)
+      @i_ptr = :fail
+    when i::CLOSE_RUN_TIME
+      # The LPEG code for runtime captures is very complicated. Reading through it, it appears that the complexity comes from
+      # needing to carefully manage the capture breadcrumbs wrt to the Lua values living on the Lua stack to avoid memory
+      # leaks. We don't have to worry about that here, as everything is in Ruby and we can leave the hard stuff to the garbage
+      # collector. The remaining work is little more than we have with a function capture.
+      result = run_time_capture
+      handle_run_time_capture_result(result)
+    when i::OPEN_CAPTURE
+      record_capture(instr, size: 0, subject_index: @subject_index)
+    when i::CLOSE_CAPTURE
+      # As in LPEG: "if possible, turn capture into a full capture"
+      raise "Close capture without an open" unless @bread_count.positive?
+
+      lc = @breadcrumbs[@bread_count - 1].must_be # still on the breadcrumb list
+      if lc.size.zero? && (@subject_index - lc.subject_index) < 255 # TODO: should we care about an upper bound here?
+        # The previous breadcrumb was an OPEN, and we are closing it
+        lc.size = @subject_index - lc.subject_index + 1
+        @i_ptr += 1
+      else
+        record_capture(instr, size: 1, subject_index: @subject_index)
+      end
+    when i::FULL_CAPTURE
+      # We have an all-in-one match, and the "capture length" tells us how far back in the subject the match started.
+      len = (instr.aux[:capture_length] || 0).must_be(Integer)
+      record_capture(instr, size: 1 + len, subject_index: @subject_index - len)
+    when i::OP_END
+      @success = true
+      done!
+    when i::UNREACHABLE
+      raise "VM reached :unreachable instruction at line #{@i_ptr}"
+    else
+      raise "Unhandled op code #{instr.op_code}"
     end
   end
 
@@ -219,6 +219,19 @@ class ParsingMachine
       "#{i.to_s.rjust 3}: #{instr}"
     end.join("\n")
   end
+
+  ########################################
+  # Support for a debugger
+
+  # These are internals that aren't useful in the usual case
+  attr_reader :program, :subject, :subject_index, :extra_args, :stack, :i_ptr
+
+  def breadcrumbs
+    @breadcrumbs[0, @bread_count]
+  end
+
+  #
+  ########################################
 
   # For this and the handling of the foo_CAPTURE op codes above, see the corresponding LPEG code in lpvm.c
   #
