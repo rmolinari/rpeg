@@ -58,7 +58,7 @@ require_relative 'parsing_machine'
 # - port LPEG's re module
 class Pattern
   NODE_TYPES = %i[
-    charset string any seq ordered_choice repeated not and
+    charset char any seq ordered_choice repeated not and
     ntrue nfalse grammar open_call rule call capture runtime behind
   ].each do |op|
     const_set op.upcase, op
@@ -69,19 +69,20 @@ class Pattern
 
   class << self
     # Match any character in string (regarded as a set of characters), range, or Set
+    #
+    # If the set is empty we have NFALSE, which always fails
+    # If the set has a single element we have CHAR pattern, which is a little faster in the VM
+    # Otherwise we have a CHARSET pattern
     def S(charset)
       case charset
-      when Range, Set
-        size = charset.to_a.size
+      when Set
+        size = charset.size
         return new(NFALSE) if size.zero?
-        return new(STRING, charset.to_a.first) if size == 1
+        return new(CHAR, data: charset.first) if size == 1
 
         Pattern.new(CHARSET, data: charset)
       when String
-        return P(false) if charset.empty?
-        return P(charset) if charset.length == 1
-
-        Pattern.new(CHARSET, data: Set.new(charset.chars))
+        S(Set.new(charset.chars))
       else
         raise "Cannot create a character set pattern from #{chars}"
       end
@@ -93,12 +94,22 @@ class Pattern
       when Pattern
         arg
       when String
-        # match that string exactly. We always match the empty string
-        if arg.empty?
-          P(true)
-        else
-          new(STRING, data: arg)
+        # a sequence of CHAR patterns
+        patt = P(true)
+        arg.chars.each do |ch|
+          patt *= new(CHAR, data: ch)
         end
+        patt
+        # # match that string exactly. We always match the empty string
+        # if arg.empty?
+        #   P(true)
+        # else
+        #   patt =
+        #   patt = new(CHAR, data: arg.first)
+        #   arg[1...].each do |ch|
+        #     patt *= new(CHAR, data: ch)
+        #   end
+        # end
       when Integer
         # When n >= 0, match at least n chars.
         # When n < 0, there must not be n or more characters left
@@ -124,18 +135,20 @@ class Pattern
       end
     end
 
-    # Given a 2-char string xy, the ASCII range x..y. Each argument gives a range and we match on their union
+    # Given a 2-char string xy, the ASCII range x..y. Each argument gives a range and we match on their union.
+    #
+    # Always represent with a Set.
     def R(*ranges)
       return P(false) if ranges.empty?
 
       check = lambda do |str|
         raise "Bad data #{str} for Pattern#R" unless str.is_a?(String) && str.size == 2
 
-        (str[0])..(str[1])
+        Set.new ((str[0])..(str[1])).to_a
       end
 
-      result = ranges.map{ check.call(_1) }.reduce { |memo, operand| charset_union(memo, operand) }
-      Pattern.new(CHARSET, data: result)
+      result = ranges.map{ check.call(_1) }.reduce(:|)
+      S(result)
     end
 
     # An "open call" reference to a rule in a grammar. As we don't have the grammar yet - it is available in full only when we are
@@ -315,21 +328,11 @@ class Pattern
       P(thing).match(string, init, *extra_args)
     end
 
-    # Try to keep a Range if possible
     private def charset_union(cs1, cs2)
-      if cs1.is_a?(Set)
-        cs1.merge(cs2)
-      elsif cs2.is_a?(Range)
-        # both ranges
-        if cs1.max < cs2.min || cs2.max < cs1.min
-          # disjoint
-          Set.new(cs1) + Set.new(cs2)
-        else
-          ([cs1.min, cs2.min].min)..([cs1.max, cs2.max].max)
-        end
-      else
-        Set.new(cs1).merge(cs2)
-      end
+      cs1 = Set.new([cs1]) if cs1.is_a?(String) # single char
+      cs2 = Set.new([cs2]) if cs2.is_a?(String) # single char
+
+      cs1 + cs2
     end
   end
 
@@ -372,6 +375,9 @@ class Pattern
     return self if other.type == NTRUE
     return other if type == NTRUE
 
+    # rejigger to make SEQ right-associative. I don't know that it makes a difference, but LPEG does it.
+    return left * (right * other) if type == SEQ
+
     Pattern.new(SEQ, self, other)
   end
 
@@ -379,7 +385,7 @@ class Pattern
   def +(other)
     other = fix_type(other)
 
-    if type == CHARSET && other.type == CHARSET
+    if charsettish?(self) && charsettish?(other)
       # Take the union of the charsets
       Pattern.S(charset_union(data, other.data))
     elsif type == NFALSE
@@ -437,12 +443,7 @@ class Pattern
   def -(other)
     other = fix_type(other)
 
-    if type == CHARSET && other.type == CHARSET
-      new_cs = charset_difference(data, other.data)
-      return Pattern.P(false) if new_cs.is_a?(Set) && new_cs.empty?
-
-      return Pattern.S(new_cs)
-    end
+    return Pattern.S(charset_difference(data, other.data)) if charsettish?(self) && charsettish?(other)
 
     # Otherwise we use -p2 * p1, i.e., "p2 doesn't match here" followed by "try to match and consume p1"
     -other * self
@@ -497,31 +498,19 @@ class Pattern
     Pattern.P(other) # see what we can do
   end
 
-  # Each is either a Set or a Range
+  # Each is either a Set or a single character (from a CHAR node)
   private def charset_difference(cs1, cs2)
-    if cs1.is_a?(Set)
-
-      cs1.subtract(cs2)
-    elsif cs2.is_a?(Range)
-      # They are both ranges. We can keep it that way so long as cs2 isn't in the middle of cs1.
-      if cs1.min < cs2.min && cs2.max < cs1.max
-        # Oh, hamburgers!
-        Set.new(cs1).subtract(cs2)
-      elsif cs2.min <= cs1.min && cs2.max >= cs1.max
-        # Empty set!
-        Set.new
-      elsif cs2.min <= cs1.min
-        (cs2.max)...(cs1.max)
-      else
-        (cs1.min)...(cs2.min)
-      end
-    else
-      Set.new(cs1).subtract(cs2)
-    end
+    cs1 = Set.new([cs1]) if cs1.is_a?(String) # single char
+    cs2 = Set.new([cs2]) if cs2.is_a?(String) # single char
+    cs1 - cs2
   end
 
   private def charset_union(cs1, cs2)
     self.class.send(:charset_union, cs1, cs2)
+  end
+
+  private def charsettish?(pattern)
+    pattern.type == CHARSET || pattern.type == CHAR
   end
 
   def to_s
@@ -539,8 +528,10 @@ class Pattern
     case type
     when CHARSET
       result << "Charset: #{data.join.dump}"
-    when STRING, ANY
+    when ANY
       result << "#{type_s}: #{data}"
+    when CHAR
+      result << "#{type_s}: #{data.dump}"
     when NTRUE
       result << "TRUE"
     when NFALSE
@@ -603,7 +594,7 @@ class Pattern
   # TODO: consider recurising via a #children method. Then we can handle the necessary rules in a GRAMMAR just once.
   def num_children
     case type
-    when CHARSET, STRING, ANY, NTRUE, NFALSE, OPEN_CALL
+    when CHARSET, CHAR, ANY, NTRUE, NFALSE, OPEN_CALL
       0
     when REPEATED, AND, NOT, CALL, RULE, CAPTURE, RUNTIME, BEHIND
       1
@@ -634,10 +625,8 @@ class Pattern
     case type
     when CHARSET
       code << Instruction.new(i::CHARSET, data: Set.new(data))
-    when STRING
-      data.chars.each do |ch|
-        code << Instruction.new(i::CHAR, data: ch)
-      end
+    when CHAR
+      code << Instruction.new(i::CHAR, data:)
     when ANY
       code << Instruction.new(i::ANY, data:)
     when SEQ
@@ -863,7 +852,11 @@ class Pattern
 
     case type
     when CHARSET
-      data.must_be_a(Set, Range)
+      data.must_be_a Set
+
+      # assume we only worry about 8-bit ascii characters. Note that empty set should have been converted to NFALSE and singletons
+      # to CHAR.
+      data.size.must_be_in(2..255)
     when NTRUE, NFALSE
       data.must_be nil
     when GRAMMAR
@@ -881,6 +874,9 @@ class Pattern
       data.must_be
     when RUNTIME
       data.must_be_a(Proc)
+    when CHAR
+      data.must_be_a(String)
+      data.length.must_be 1
     end
 
     return if type == GRAMMAR
@@ -1041,7 +1037,7 @@ class Pattern
       # to be fast overall - but let's try a new technique.
       loop do
         case pattern.type
-        when STRING, CHARSET, ANY, OPEN_CALL, NFALSE
+        when CHAR, CHARSET, ANY, OPEN_CALL, NFALSE
           # Not nullable; for open_call this is a blind assumption
           return false
         when NTRUE, REPEATED
@@ -1111,7 +1107,7 @@ class Pattern
 
       local_rec = lambda do |pattern, num_rules_seen|
         case pattern.type
-        when STRING, CHARSET, ANY, NTRUE, NFALSE, BEHIND
+        when CHAR, CHARSET, ANY, NTRUE, NFALSE, BEHIND
           # no op
         when NOT, AND, REPEATED, CAPTURE, RUNTIME
           # nullable, so keep going
@@ -1228,12 +1224,10 @@ class Pattern
     # We return nil if the node's matches are not all of the same length
     def fixed_len(node)
       case node.type
-      when CHARSET
+      when CHARSET, CHAR
         1
       when ANY
         node.data
-      when STRING
-        node.data.length
       when NOT, AND, NTRUE, NFALSE, BEHIND
         0
       when REPEATED, OPEN_CALL, RUNTIME
