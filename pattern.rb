@@ -64,6 +64,8 @@ class Pattern
     const_set op.upcase, op
   end
 
+  FULL_CHAR_SET = Set.new (0..255).map(&:chr)
+
   attr_reader :type, :left, :right, :capture
   attr_accessor :data # sometimes we need to tweak this
 
@@ -79,6 +81,7 @@ class Pattern
         size = charset.size
         return new(NFALSE) if size.zero?
         return new(CHAR, data: charset.first) if size == 1
+        return new(ANY, data: 1) if charset == FULL_CHAR_SET
 
         Pattern.new(CHARSET, data: charset)
       when String
@@ -100,27 +103,16 @@ class Pattern
           patt *= new(CHAR, data: ch)
         end
         patt
-        # # match that string exactly. We always match the empty string
-        # if arg.empty?
-        #   P(true)
-        # else
-        #   patt =
-        #   patt = new(CHAR, data: arg.first)
-        #   arg[1...].each do |ch|
-        #     patt *= new(CHAR, data: ch)
-        #   end
-        # end
       when Integer
         # When n >= 0, match at least n chars.
         # When n < 0, there must not be n or more characters left
-        if arg.zero?
-          P(true)
-        elsif arg.positive?
-          new(ANY, data: arg)
-        else
-          # "Does not match n characters"
-          -P(-arg)
-        end
+        return -P(-arg) if arg.negative?
+        return P(true) if arg.zero?
+
+        # LPEG represents this with a sequence of arg single-char ANY statements, i.e., not as described in the paper. I think it
+        # makes certain code optimizations simpler to analyze. But doing that here slows down my unit tests to a suprising degree
+        # (which itself shows that I'm doing something very inefficiently somewhere).
+        new(ANY, data: arg)
       when FalseClass
         @false_tree ||= new(NFALSE)
       when TrueClass
