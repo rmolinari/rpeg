@@ -72,8 +72,15 @@ class Pattern
     def S(charset)
       case charset
       when Range, Set
+        size = charset.to_a.size
+        return new(NFALSE) if size.zero?
+        return new(STRING, charset.to_a.first) if size == 1
+
         Pattern.new(CHARSET, data: charset)
       when String
+        return P(false) if charset.empty?
+        return P(charset) if charset.length == 1
+
         Pattern.new(CHARSET, data: Set.new(charset.chars))
       else
         raise "Cannot create a character set pattern from #{chars}"
@@ -89,8 +96,6 @@ class Pattern
         # match that string exactly. We always match the empty string
         if arg.empty?
           P(true)
-        elsif arg.size == 1
-          S(arg)
         else
           new(STRING, data: arg)
         end

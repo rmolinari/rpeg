@@ -577,6 +577,8 @@ class TestsFromLpegCode < Test::Unit::TestCase
     # --    3 <---0---> 4
     # --
     # -- this grammar should keep no backtracking information
+    #
+    # I think this claim relies on the headfail/follow optimization that the LPEG code does and my code doesn't.
 
     p = m.P([
               '0' * m.V(1) + '1' * m.V(2) + -1,
