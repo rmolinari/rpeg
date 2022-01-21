@@ -330,7 +330,7 @@ class Pattern
   # init: the string index to start at, defaulting to 0
   # extra_args: used by Argument Captures
   def match(str, init = 0, *extra_args)
-    @program ||= optimize_jumps(code + [Instruction.new(Instruction::OP_END)])
+    @program ||= optimize_jumps(code(follow_set: FULL_CHAR_SET) + [Instruction.new(Instruction::OP_END)])
 
     machine = ParsingMachine.new(@program, str, init, extra_args)
     machine.run
@@ -581,6 +581,14 @@ class Pattern
     Analysis.has_captures?(self)
   end
 
+  def first_set(follow_set = FULL_CHAR_SET)
+    Analysis.first_set(self, follow_set)
+  end
+
+  def head_fail?
+    Analysis.head_fail?(self)
+  end
+
   # TODO: consider recurising via a #children method. Then we can handle the necessary rules in a GRAMMAR just once.
   def num_children
     case type
@@ -600,7 +608,13 @@ class Pattern
   ########################################
   # Code generation
 
-  def code
+  # follow_set
+  # - the set of first characters accepted by whatever comes after us, or the full set of characters if nothing follows us
+  #
+  # dominating_test
+  # - a TEST_CHAR, TEST_CHARSET, or TEST_ANY instruction that we can assume has succeeded and which might save us a little time
+  # - see the tt argument sprinkled through the functions in LPEG's lpcode.c
+  def code(follow_set:, dominating_test: nil)
     return @code if @code
 
     # shorthand
@@ -609,13 +623,21 @@ class Pattern
     code = []
     case type
     when CHARSET
-      code << Instruction.new(i::CHARSET, data: Set.new(data))
+      code << charset_code(data, dominating_test)
     when CHAR
-      code << Instruction.new(i::CHAR, data:)
+      code << char_code(data, dominating_test)
     when ANY
       code << Instruction.new(i::ANY)
     when SEQ
-      code = left.code + right.code
+      # See LPEG's codeseq1 (lpcode.c) for the handling of the dominating test (if any)
+      # TODO: LPEG's optimization useing needfollow
+      code = left.code(follow_set: FULL_CHAR_SET, dominating_test:)
+      if left.fixed_len != 0
+        # /* can 'p1' consume anything? */
+        dominating_test = nil # /* invalidate test */
+        # /* else 'tt' still protects sib2 */
+      end
+      code += right.code(follow_set:, dominating_test:)
     when NTRUE
       # we always succeed, which means we don't have to do anything at all
     when NFALSE
@@ -628,30 +650,73 @@ class Pattern
       # This is symbolic target for now. It will be converted to a numeric offset during GRAMMAR analysis
       code << Instruction.new(i::CALL, offset: data)
     when ORDERED_CHOICE
-      p1 = left.code
-      p2 = right.code
+      # From LPEG's cocdechoice (lpcode.c)
+      # /*
+      # ** Choice; optimizations:
+      # ** - when p1 is headfail or
+      # ** when first(p1) and first(p2) are disjoint, than
+      # ** a character not in first(p1) cannot go to p1, and a character
+      # ** in first(p1) cannot go to p2 (at it is not in first(p2)).
+      # ** (The optimization is not valid if p1 accepts the empty string,
+      # ** as then there is no character at all...)
+      # ** - when p2 is empty and opt is true; a IPartialCommit can reuse
+      # ** the Choice already active in the stack.
+      # */
+      #
+      # I don't know what the "Choice already active in the stack" means, so I won't do that part until I have some idea.
+      right_empty = right.type == NTRUE
+      e1, left_first_set = left.first_set
+      if left.head_fail? ||
+         (e1.zero? && ((_, right_first_set = right.first_set(follow_set)); left_first_set.disjoint?(right_first_set)))
 
-      code << Instruction.new(i::CHOICE, offset: 2 + p1.size)
-      code += p1
-      code << Instruction.new(i::COMMIT, offset: 1 + p2.size)
-      code += p2
+        # We can optimize here. See the comment at ParsingMachine#test_char about how the LPEG approach (we we copy here) differs
+        # from what is described in Ierusalimschy's paper.
+        test = testset_code(left_first_set)
+
+        left_code = left.code(follow_set:, dominating_test: test)
+        offset = 1 + left_code.size
+        offset += 1 unless right_empty
+
+        test.offset = offset
+
+        code << test
+        code += left_code
+        unless right_empty
+          right_code = right.code(follow_set:)
+          code << Instruction.new(i::JUMP, offset: 1 + right_code.size)
+          code += right_code
+        end
+      else
+        p1 = left.code(follow_set: FULL_CHAR_SET, dominating_test:)
+        p2 = right.code(follow_set:)
+
+        code << Instruction.new(i::CHOICE, offset: 2 + p1.size)
+        code += p1
+        code << Instruction.new(i::COMMIT, offset: 1 + p2.size)
+        code += p2
+      end
     when REPEATED
-      p = child.code
-
       if child.type == CHARSET
         # Special, quicker handling when the thing we are repeated over is a charset. See Ierusalimschy 4.3
         code << Instruction.new(i::SPAN, data: child.data)
       else
+        p = child.code(follow_set: FULL_CHAR_SET)
         code << Instruction.new(i::CHOICE, offset: 2 + p.size)
         code += p
         code << Instruction.new(i::PARTIAL_COMMIT, offset: -p.size)
       end
     when NOT
-      p = child.code
+      e, first_set = child.first_set
+      if e.zero? && child.head_fail?
+        code << testset_code(first_set, 2)
+        code << Instruction.new(i::FAIL)
+      else
+        p = child.code(follow_set: FULL_CHAR_SET)
 
-      code << Instruction.new(i::CHOICE, offset: 2 + p.size)
-      code += p
-      code << Instruction.new(i::FAIL_TWICE)
+        code << Instruction.new(i::CHOICE, offset: 2 + p.size)
+        code += p
+        code << Instruction.new(i::FAIL_TWICE)
+      end
     when AND
       # LPEG:
       # /*
@@ -659,7 +724,7 @@ class Pattern
       # ** optimization: fixedlen(p) = n ==> <&p> == <p>; behind n
       # ** (valid only when 'p' has no captures)
       # */
-      p = child.code
+      p = child.code(follow_set: FULL_CHAR_SET, dominating_test:)
       len = child.fixed_len
       if len && !child.has_captures?
         code += p
@@ -672,9 +737,9 @@ class Pattern
       end
     when BEHIND
       code << Instruction.new(i::BEHIND, aux: data) if data.positive?
-      code += child.code
+      code += child.code(follow_set: FULL_CHAR_SET)
     when CAPTURE
-      c = child.code
+      c = child.code(follow_set:, dominating_test:)
       len = fixed_len
       if len && !child.has_captures?
         code += c
@@ -686,10 +751,10 @@ class Pattern
       end
     when RUNTIME
       code << Instruction.new(i::OPEN_CAPTURE, data:, aux: { kind: Capture::GROUP })
-      code += child.code
+      code += child.code(follow_set: FULL_CHAR_SET, dominating_test:)
       code << Instruction.new(i::CLOSE_RUN_TIME, aux: { kind: Capture::CLOSE })
     when RULE
-      code = child.code
+      code = child.code(follow_set:)
 
       #code[0] = code.first.dup
       code.first.dec = data # decorate with the nonterminal, but clone first to avoid unexpected mutations
@@ -698,10 +763,9 @@ class Pattern
       full_rule_code = []
 
       child.each do |rule|
-        # byebug if $do_it
         nonterminal = rule.data
         start_line_of_nonterminal[nonterminal] = 2 + full_rule_code.size
-        full_rule_code += rule.code + [Instruction.new(i::RETURN)]
+        full_rule_code += rule.code(follow_set: FULL_CHAR_SET) + [Instruction.new(i::RETURN)]
       end
 
       code << Instruction.new(i::CALL, offset: data) # call the nonterminal, in @data by fix_up_grammar
@@ -732,6 +796,51 @@ class Pattern
     end
 
     @code = code
+  end
+
+  # LPEG's codetestset (lpcode.c)
+  #
+  # /*
+  # ** code a test set, optimizing unit sets for ITestChar, "complete"
+  # ** sets for ITestAny, and empty sets for IJmp (always fails).
+  # ** 'e' is true iff test should accept the empty string. (Test
+  # ** instructions in the current VM never accept the empty string.)
+  # */
+  #
+  # first_set is the set of first-chars that we want to match on.
+  # Offset is where to jump to if we don't match one of them.
+  #
+  # If offset is not given we don't set it: client code is responsible for that.
+  def testset_code(first_set, offset = nil)
+    case first_set.size
+    when 0
+      Instruction.new(Instruction::JUMP, offset:) # we will always fail, so just jump
+    when 1
+      Instruction.new(Instruction::TEST_CHAR, offset:, data: first_set.first)
+    when FULL_CHAR_SET.size
+      Instruction.new(Instruction::TEST_ANY, offset:)
+    else
+      Instruction.new(Instruction::TEST_CHARSET, offset:, data: first_set)
+    end
+  end
+
+  def charset_code(charset, dominating_test)
+    if charset.size == 1
+      char_code(charset.first, dominating_test)
+    elsif dominating_test&.op_code == Instruction::TEST_CHARSET && dominating_test&.data == charset
+      # the "dominating test" has already checked for us so we can use ANY, which is quicker
+      Instruction.new(Instruction::ANY)
+    else
+      Instruction.new(Instruction::CHARSET, data: charset)
+    end
+  end
+
+  def char_code(char, dominating_test)
+    if dominating_test&.op_code == Instruction::TEST_CHAR && dominating_test&.data == char
+      Instruction.new(Instruction::ANY)
+    else
+      Instruction.new(Instruction::CHAR, data: char)
+    end
   end
 
   # LPEG's peephole (lpcode.c)
@@ -1269,7 +1378,7 @@ class Pattern
     # and return the int and firstset.
     #
     #
-    def get_first(pattern, follow_set)
+    def first_set(pattern, follow_set)
       case pattern.type
       when CHAR, CHARSET, ANY
         [0, pattern.charset]
@@ -1277,44 +1386,44 @@ class Pattern
         [1, follow_set.clone] # /* accepts the empty string */
       when NFALSE
         [0, Set.new]
-      when CHOICE
-        e1, first1 = get_first(pattern.left, follow_set)
-        e2, first2 = get_first(pattern.right, follow_set)
+      when ORDERED_CHOICE
+        e1, first1 = first_set(pattern.left, follow_set)
+        e2, first2 = first_set(pattern.right, follow_set)
         [e1 | e2, first1 | first2]
       when SEQ
         if !pattern.left.nullable?
           # /* when p1 is not nullable, p2 has nothing to contribute;
           #  return getfirst(sib1(tree), fullset, firstset); */
-          get_first(pattern.left, FULL_CHAR_SET)
+          first_set(pattern.left, FULL_CHAR_SET)
         else
-          e2, first2 = get_first(pattern.right, follow_set)
-          e1, first1 = get_first(pattern.left, first2)
+          e2, first2 = first_set(pattern.right, follow_set)
+          e1, first1 = first_set(pattern.left, first2)
           return [0, first1] if e1.zero? # /* 'e1' ensures that first can be used */
           return [2, first1] if (e1 | e2) & 2 == 2 # /* one of the children has a matchtime? */
 
           [e2, first1] # /* else depends on 'e2' */
         end
       when REPEATED
-        _, first_cs = get_first(pattern.child, follow_set)
+        _, first_cs = first_set(pattern.child, follow_set)
         [1, first_cs] # /* accept the empty string */
       when CAPTURE, RULE
-        get_first(pattern.child, follow_set)
+        first_set(pattern.child, follow_set)
       when GRAMMAR
-        get_first(pattern.child.first, follow_set)
+        first_set(pattern.child.first, follow_set)
       when RUNTIME
         # NOTE: I don't understand this
         #
         # /* function invalidates any follow info. */
-        e, first_set = getfirst(pattern.child, fullset)
+        e, first_set = first_set(pattern.child, FULL_CHAR_SET)
         if e.positive?
           [2, first_set] # /* function is not "protected"? */
         else
           [0, first_set] # /* pattern inside capture ensures first can be used */
         end
       when CALL
-        get_first(pattern.child, follow_set)
+        first_set(pattern.child, follow_set)
       when AND
-        e, first_set = get_first(pattern.child, follow_set)
+        e, first_set = first_set(pattern.child, follow_set)
         [e, first_set & follow_set]
       when NOT, BEHIND
         if pattern.type == NOT && pattern.child.charsetlike?
@@ -1322,7 +1431,7 @@ class Pattern
         else
           # /* instruction gives no new information */
           # /* call 'getfirst' only to check for math-time captures */
-          e, = get_first(pattern.child, follow_set)
+          e, = first_set(pattern.child, follow_set)
           [e | 1, follow_set] # /* always can accept the empty string */
         end
       else
@@ -1338,11 +1447,11 @@ class Pattern
     # */
     def head_fail?(pattern)
       case pattern.type
-      when CHAR, SET, ANY, FALSE
+      when CHAR, CHARSET, ANY, NFALSE
         true
-      when TRUE, REPEAT, RUNTIME, NOT
+      when NTRUE, REPEATED, RUNTIME, NOT
         false
-      when CAPTURE, RULE, AND
+      when CAPTURE, RULE, AND, CALL
         head_fail?(pattern.child)
       when GRAMMAR
         head_fail?(pattern.child.first)
@@ -1350,7 +1459,7 @@ class Pattern
         return false unless pattern.right.nofail?
 
         head_fail?(pattern.left)
-      when CHOICE
+      when ORDERED_CHOICE
         head_fail?(pattern.left) && head_fail?(pattern.right)
       else
         raise "Unhandled node type #{pattern.type}"

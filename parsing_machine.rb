@@ -15,6 +15,7 @@ class Instruction
     char charset any jump choice call return commit back_commit
     partial_commit span op_end fail fail_twice unreachable
     open_capture close_capture close_run_time full_capture behind
+    test_char test_charset test_any
   ].each do |op|
     const_set op.upcase, op
   end
@@ -41,16 +42,20 @@ class Instruction
     str = (dec || "").to_s.rjust(DECORATION_WIDTH) + " :"
     str << op_code.to_s.upcase.rjust(OP_WIDTH + 1)
 
+    if [TEST_CHAR, TEST_ANY, TEST_CHARSET].include?(op_code)
+      str << " offset: #{offset}"
+    end
+
     case op_code
-    when CHAR
+    when CHAR, TEST_CHAR
       str << "  #{data.dump}"
     when BEHIND
       str << "  #{aux}"
-    when CHARSET, SPAN
+    when CHARSET, SPAN, TEST_CHARSET
       str << "  #{data.to_a.join.dump}"
     when JUMP, CHOICE, CALL, COMMIT, BACK_COMMIT, PARTIAL_COMMIT
       str << "  #{offset}"
-    when RETURN, OP_END, FAIL, FAIL_TWICE, UNREACHABLE, ANY
+    when RETURN, OP_END, FAIL, FAIL_TWICE, UNREACHABLE, ANY, TEST_ANY
     # no-op
     when OPEN_CAPTURE, CLOSE_CAPTURE, FULL_CAPTURE, CLOSE_RUN_TIME
       str << "  data:#{data}, aux:#{aux}"
@@ -119,12 +124,13 @@ class ParsingMachine
     when i::CHARSET
       check_char(instr.data.include?(@subject[@subject_index]))
     when i::ANY
-      if @subject_index < @subject.size
-        @i_ptr += 1
-        @subject_index += 1
-      else
-        @i_ptr = :fail
-      end
+      check_char(@subject_index < @subject.size)
+    when i::TEST_CHAR
+      test_char(instr.data == @subject[@subject_index], instr.offset)
+    when i::TEST_CHARSET
+      test_char(instr.data.include?(@subject[@subject_index]), instr.offset)
+    when i::TEST_ANY
+      test_char(@subject_index < @subject.size, instr.offset)
     when i::JUMP
       @i_ptr += instr.offset
     when i::CHOICE
@@ -253,6 +259,22 @@ class ParsingMachine
       @subject_index += 1
     else
       @i_ptr = :fail
+    end
+  end
+
+  # React to a character match or failure in one of the TestFoo instruction
+  #
+  # IMPORTANT NOTE
+  #
+  # Ierusalimschy's paper describes these as consuming the next character, and code generated for things like char sequences being
+  # tweaked to take this into account. BUT the LPEG code does it differently. These _check_ the current character but do not consume
+  # it: the following test is expected to do so. During code generation the "currently controlling" TEST_FOO is passed along so
+  # followup checks can be optimized. See codechar and codecharset in lpcode.c.
+  private def test_char(success, offset)
+    if success
+      @i_ptr += 1
+    else
+      @i_ptr += offset
     end
   end
 
