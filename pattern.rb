@@ -600,12 +600,6 @@ class Pattern
   ########################################
   # Code generation
 
-  # Duplicate the code elements to avoid incorrect decoration showing up due to subprogram reuse
-  private def code_for(pattern)
-    # pattern.code.map(&:dup)
-    pattern.code
-  end
-
   def code
     return @code if @code
 
@@ -621,7 +615,7 @@ class Pattern
     when ANY
       code << Instruction.new(i::ANY)
     when SEQ
-      code = code_for(left) + code_for(right)
+      code = left.code + right.code
     when NTRUE
       # we always succeed, which means we don't have to do anything at all
     when NFALSE
@@ -634,15 +628,15 @@ class Pattern
       # This is symbolic target for now. It will be converted to a numeric offset during GRAMMAR analysis
       code << Instruction.new(i::CALL, offset: data)
     when ORDERED_CHOICE
-      p1 = code_for(left)
-      p2 = code_for(right)
+      p1 = left.code
+      p2 = right.code
 
       code << Instruction.new(i::CHOICE, offset: 2 + p1.size)
       code += p1
       code << Instruction.new(i::COMMIT, offset: 1 + p2.size)
       code += p2
     when REPEATED
-      p = code_for(child)
+      p = child.code
 
       if child.type == CHARSET
         # Special, quicker handling when the thing we are repeated over is a charset. See Ierusalimschy 4.3
@@ -653,7 +647,7 @@ class Pattern
         code << Instruction.new(i::PARTIAL_COMMIT, offset: -p.size)
       end
     when NOT
-      p = code_for(child)
+      p = child.code
 
       code << Instruction.new(i::CHOICE, offset: 2 + p.size)
       code += p
@@ -665,7 +659,7 @@ class Pattern
       # ** optimization: fixedlen(p) = n ==> <&p> == <p>; behind n
       # ** (valid only when 'p' has no captures)
       # */
-      p = code_for(child)
+      p = child.code
       len = child.fixed_len
       if len && !child.has_captures?
         code += p
@@ -678,9 +672,9 @@ class Pattern
       end
     when BEHIND
       code << Instruction.new(i::BEHIND, aux: data) if data.positive?
-      code += code_for(child)
+      code += child.code
     when CAPTURE
-      c = code_for(child)
+      c = child.code
       len = fixed_len
       if len && !child.has_captures?
         code += c
@@ -692,10 +686,10 @@ class Pattern
       end
     when RUNTIME
       code << Instruction.new(i::OPEN_CAPTURE, data:, aux: { kind: Capture::GROUP })
-      code += code_for(child)
+      code += child.code
       code << Instruction.new(i::CLOSE_RUN_TIME, aux: { kind: Capture::CLOSE })
     when RULE
-      code = code_for(child)
+      code = child.code
 
       #code[0] = code.first.dup
       code.first.dec = data # decorate with the nonterminal, but clone first to avoid unexpected mutations
@@ -707,9 +701,8 @@ class Pattern
         # byebug if $do_it
         nonterminal = rule.data
         start_line_of_nonterminal[nonterminal] = 2 + full_rule_code.size
-        full_rule_code += code_for(rule) + [Instruction.new(i::RETURN)]
+        full_rule_code += rule.code + [Instruction.new(i::RETURN)]
       end
-
 
       code << Instruction.new(i::CALL, offset: data) # call the nonterminal, in @data by fix_up_grammar
       code << Instruction.new(i::JUMP, offset: 1 + full_rule_code.size) # we are done: jump to the line after the grammar's coderam
@@ -1245,6 +1238,122 @@ class Pattern
         right_len == left_len ? right_len : nil
       else
         raise "Unhandled node type #{node.type}"
+      end
+    end
+
+    # LPEG's getfirst
+    #
+    # static int getfirst (TTree *tree, const Charset *follow, Charset *firstset) {
+    #
+    # /*
+    # ** Computes the 'first set' of a pattern.
+    # ** The result is a conservative aproximation:
+    # **   match p ax -> x (for some x) ==> a belongs to first(p)
+    # ** or
+    # **   a not in first(p) ==> match p ax -> fail (for all x)
+    # [So we want to know the set of characters that can make the pattern succeed, at least on the first characters]
+    # **
+    # ** The set 'follow' is the first set of what follows the
+    # ** pattern (full set if nothing follows it).
+    # **
+    # ** The function returns 0 when this resulting set can be used for
+    # ** test instructions that avoid the pattern altogether.
+    # ** A non-zero return can happen for two reasons:
+    # ** 1) match p '' -> ''            ==> return has bit 1 set
+    # ** (tests cannot be used because they would always fail for an empty input);
+    # ** 2) there is a match-time capture ==> return has bit 2 set
+    # ** (optimizations should not bypass match-time captures).
+    # */
+    #
+    # I don't really understand what is going on here. I'm hoping it will make more sense as I port it. I think we pass in follow
+    # and return the int and firstset.
+    #
+    #
+    def get_first(pattern, follow_set)
+      case pattern.type
+      when CHAR, CHARSET, ANY
+        [0, pattern.charset]
+      when NTRUE
+        [1, follow_set.clone] # /* accepts the empty string */
+      when NFALSE
+        [0, Set.new]
+      when CHOICE
+        e1, first1 = get_first(pattern.left, follow_set)
+        e2, first2 = get_first(pattern.right, follow_set)
+        [e1 | e2, first1 | first2]
+      when SEQ
+        if !pattern.left.nullable?
+          # /* when p1 is not nullable, p2 has nothing to contribute;
+          #  return getfirst(sib1(tree), fullset, firstset); */
+          get_first(pattern.left, FULL_CHAR_SET)
+        else
+          e2, first2 = get_first(pattern.right, follow_set)
+          e1, first1 = get_first(pattern.left, first2)
+          return [0, first1] if e1.zero? # /* 'e1' ensures that first can be used */
+          return [2, first1] if (e1 | e2) & 2 == 2 # /* one of the children has a matchtime? */
+
+          [e2, first1] # /* else depends on 'e2' */
+        end
+      when REPEATED
+        _, first_cs = get_first(pattern.child, follow_set)
+        [1, first_cs] # /* accept the empty string */
+      when CAPTURE, RULE
+        get_first(pattern.child, follow_set)
+      when GRAMMAR
+        get_first(pattern.child.first, follow_set)
+      when RUNTIME
+        # NOTE: I don't understand this
+        #
+        # /* function invalidates any follow info. */
+        e, first_set = getfirst(pattern.child, fullset)
+        if e.positive?
+          [2, first_set] # /* function is not "protected"? */
+        else
+          [0, first_set] # /* pattern inside capture ensures first can be used */
+        end
+      when CALL
+        get_first(pattern.child, follow_set)
+      when AND
+        e, first_set = get_first(pattern.child, follow_set)
+        [e, first_set & follow_set]
+      when NOT, BEHIND
+        if pattern.type == NOT && pattern.child.charsetlike?
+          [1, FULL_CHAR_SET - pattern.child.charset]
+        else
+          # /* instruction gives no new information */
+          # /* call 'getfirst' only to check for math-time captures */
+          e, = get_first(pattern.child, follow_set)
+          [e | 1, follow_set] # /* always can accept the empty string */
+        end
+      else
+        raise "Unhandled node type #{pattern.type}"
+      end
+    end
+
+    # LPEG's headfail
+    #
+    # /*
+    # ** If 'headfail(tree)' true, then 'tree' can fail only depending on the
+    # ** next character of the subject.
+    # */
+    def head_fail?(pattern)
+      case pattern.type
+      when CHAR, SET, ANY, FALSE
+        true
+      when TRUE, REPEAT, RUNTIME, NOT
+        false
+      when CAPTURE, RULE, AND
+        head_fail?(pattern.child)
+      when GRAMMAR
+        head_fail?(pattern.child.first)
+      when SEQ
+        return false unless pattern.right.nofail?
+
+        head_fail?(pattern.left)
+      when CHOICE
+        head_fail?(pattern.left) && head_fail?(pattern.right)
+      else
+        raise "Unhandled node type #{pattern.type}"
       end
     end
   end
