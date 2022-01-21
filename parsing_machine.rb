@@ -42,15 +42,15 @@ class Instruction
     str << op_code.to_s.upcase.rjust(OP_WIDTH + 1)
 
     case op_code
-    when CHAR, ANY
-      str << "  #{data}"
+    when CHAR
+      str << "  #{data.dump}"
     when BEHIND
       str << "  #{aux}"
     when CHARSET, SPAN
       str << "  #{data.to_a.join.dump}"
     when JUMP, CHOICE, CALL, COMMIT, BACK_COMMIT, PARTIAL_COMMIT
       str << "  #{offset}"
-    when RETURN, OP_END, FAIL, FAIL_TWICE, UNREACHABLE
+    when RETURN, OP_END, FAIL, FAIL_TWICE, UNREACHABLE, ANY
     # no-op
     when OPEN_CAPTURE, CLOSE_CAPTURE, FULL_CAPTURE, CLOSE_RUN_TIME
       str << "  data:#{data}, aux:#{aux}"
@@ -119,9 +119,9 @@ class ParsingMachine
     when i::CHARSET
       check_char(instr.data.include?(@subject[@subject_index]))
     when i::ANY
-      if @subject_index + instr.data <= @subject.size
+      if @subject_index < @subject.size
         @i_ptr += 1
-        @subject_index += instr.data
+        @subject_index += 1
       else
         @i_ptr = :fail
       end

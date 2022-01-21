@@ -64,7 +64,8 @@ class Pattern
     const_set op.upcase, op
   end
 
-  FULL_CHAR_SET = Set.new (0..255).map(&:chr)
+  # We assume we have UTF-8 input with no multibyte characters.
+  FULL_CHAR_SET = Set.new((0..255).map{ _1.chr(Encoding::UTF_8) })
 
   attr_reader :type, :left, :right, :capture
   attr_accessor :data # sometimes we need to tweak this
@@ -81,7 +82,7 @@ class Pattern
         size = charset.size
         return new(NFALSE) if size.zero?
         return new(CHAR, data: charset.first) if size == 1
-        return new(ANY, data: 1) if charset == FULL_CHAR_SET
+        return new(ANY) if charset == FULL_CHAR_SET
 
         Pattern.new(CHARSET, data: charset)
       when String
@@ -99,20 +100,22 @@ class Pattern
       when String
         # a sequence of CHAR patterns
         patt = P(true)
-        arg.chars.each do |ch|
-          patt *= new(CHAR, data: ch)
+        arg.chars.reverse.each do |ch|
+          patt = new(CHAR, data: ch) * patt
         end
         patt
       when Integer
         # When n >= 0, match at least n chars.
         # When n < 0, there must not be n or more characters left
         return -P(-arg) if arg.negative?
-        return P(true) if arg.zero?
 
-        # LPEG represents this with a sequence of arg single-char ANY statements, i.e., not as described in the paper. I think it
-        # makes certain code optimizations simpler to analyze. But doing that here slows down my unit tests to a suprising degree
-        # (which itself shows that I'm doing something very inefficiently somewhere).
-        new(ANY, data: arg)
+        # In LPEG the ANY VM instruction takes no arg and matches a single char, unlike the description in the paper. I think it
+        # makes certain code optimizations simpler to analyze. We do the same.
+        patt = P(true)
+        arg.times do
+          patt = new(ANY) * patt
+        end
+        patt
       when FalseClass
         @false_tree ||= new(NFALSE)
       when TrueClass
@@ -319,13 +322,6 @@ class Pattern
     def match(thing, string, init = 0, *extra_args)
       P(thing).match(string, init, *extra_args)
     end
-
-    private def charset_union(cs1, cs2)
-      cs1 = Set.new([cs1]) if cs1.is_a?(String) # single char
-      cs2 = Set.new([cs2]) if cs2.is_a?(String) # single char
-
-      cs1 + cs2
-    end
   end
 
   # Return the index just after the matching prefix of str or nil if there is no match
@@ -377,9 +373,9 @@ class Pattern
   def +(other)
     other = fix_type(other)
 
-    if charsettish?(self) && charsettish?(other)
+    if charsetlike? && other.charsetlike?
       # Take the union of the charsets
-      Pattern.S(charset_union(data, other.data))
+      Pattern.S(charset + other.charset)
     elsif type == NFALSE
       other
     elsif other.type == NFALSE
@@ -435,7 +431,7 @@ class Pattern
   def -(other)
     other = fix_type(other)
 
-    return Pattern.S(charset_difference(data, other.data)) if charsettish?(self) && charsettish?(other)
+    return Pattern.S(charset - other.charset) if charsetlike? && other.charsetlike?
 
     # Otherwise we use -p2 * p1, i.e., "p2 doesn't match here" followed by "try to match and consume p1"
     -other * self
@@ -488,21 +484,6 @@ class Pattern
     return other if other.is_a?(Pattern)
 
     Pattern.P(other) # see what we can do
-  end
-
-  # Each is either a Set or a single character (from a CHAR node)
-  private def charset_difference(cs1, cs2)
-    cs1 = Set.new([cs1]) if cs1.is_a?(String) # single char
-    cs2 = Set.new([cs2]) if cs2.is_a?(String) # single char
-    cs1 - cs2
-  end
-
-  private def charset_union(cs1, cs2)
-    self.class.send(:charset_union, cs1, cs2)
-  end
-
-  private def charsettish?(pattern)
-    pattern.type == CHARSET || pattern.type == CHAR
   end
 
   def to_s
@@ -563,6 +544,23 @@ class Pattern
   ########################################
   # Pattern properties
 
+  def charsetlike?
+    type == CHARSET || type == CHAR || type == ANY
+  end
+
+  def charset
+    raise "Pattern #{type} isn't charset-like" unless charsetlike?
+
+    case type
+    when CHARSET
+      data
+    when CHAR
+      Set.new([data])
+    when ANY
+      FULL_CHAR_SET
+    end
+  end
+
   def nullable?
     return @nullable if defined? @nullable
 
@@ -604,7 +602,8 @@ class Pattern
 
   # Duplicate the code elements to avoid incorrect decoration showing up due to subprogram reuse
   private def code_for(pattern)
-    pattern.code.map(&:dup)
+    # pattern.code.map(&:dup)
+    pattern.code
   end
 
   def code
@@ -620,7 +619,7 @@ class Pattern
     when CHAR
       code << Instruction.new(i::CHAR, data:)
     when ANY
-      code << Instruction.new(i::ANY, data:)
+      code << Instruction.new(i::ANY)
     when SEQ
       code = code_for(left) + code_for(right)
     when NTRUE
@@ -697,7 +696,9 @@ class Pattern
       code << Instruction.new(i::CLOSE_RUN_TIME, aux: { kind: Capture::CLOSE })
     when RULE
       code = code_for(child)
-      code.first.dec = data # decorate with the nonterminal
+
+      #code[0] = code.first.dup
+      code.first.dec = data # decorate with the nonterminal, but clone first to avoid unexpected mutations
     when GRAMMAR
       start_line_of_nonterminal = {}
       full_rule_code = []
@@ -737,7 +738,7 @@ class Pattern
       raise "Unhandled pattern type #{type}"
     end
 
-    @code = code.freeze
+    @code = code
   end
 
   # LPEG's peephole (lpcode.c)
@@ -849,7 +850,7 @@ class Pattern
       # assume we only worry about 8-bit ascii characters. Note that empty set should have been converted to NFALSE and singletons
       # to CHAR.
       data.size.must_be_in(2..255)
-    when NTRUE, NFALSE
+    when NTRUE, NFALSE, ANY
       data.must_be nil
     when GRAMMAR
       data.must_be_a(Hash, Array)
@@ -1216,10 +1217,8 @@ class Pattern
     # We return nil if the node's matches are not all of the same length
     def fixed_len(node)
       case node.type
-      when CHARSET, CHAR
+      when CHARSET, CHAR, ANY
         1
-      when ANY
-        node.data
       when NOT, AND, NTRUE, NFALSE, BEHIND
         0
       when REPEATED, OPEN_CALL, RUNTIME

@@ -8,15 +8,12 @@ end
 
 m = Pattern
 
-p = m.P([
-          '0' * m.V(1) + '1' * m.V(2) + -1,
-          '0' * m.V(0) + '1' * m.V(3),
-          '0' * m.V(3) + '1' * m.V(0),
-          '0' * m.V(2) + '1' * m.V(1)
-        ])
+p = m.P(true)
 
-assert p.match("00" * 10_000)
-assert p.match("01" * 10_000)
-assert p.match("011" * 10_000)
-assert !p.match(("011" * 10_000) + "1")
-assert !p.match("011" * 10_001)
+len = 500
+len.times do
+  p = 1 * p
+end
+
+assert p.match('1' * len)
+assert !p.match('1' * (len - 1))

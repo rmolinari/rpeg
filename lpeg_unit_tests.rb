@@ -125,7 +125,6 @@ class TestsFromLpegCode < Test::Unit::TestCase
     assert m.match(digit**0 * letter * digit * eos, "1298a1")
     assert_nil m.match(digit**0 * letter * eos, "1257a1")
 
-    # Note we use index 0 rather than 1 because Lua is 1-based
     b = [ "(" * (((1 - m.S("()")) + +m.P("(") * m.V(0))**0) * ")" ]
 
     assert m.match(b, "(al())()")
