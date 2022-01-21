@@ -105,8 +105,6 @@ class ParsingMachine
   end
 
   def step
-    raise "Cannot step: already done" if done?
-
     i = Instruction # shorthand
 
     if @i_ptr == :fail
@@ -114,7 +112,7 @@ class ParsingMachine
       return
     end
 
-    raise "current instruction pointer #{@i_ptr} is negative" if @i_ptr.negative?
+    # raise "current instruction pointer #{@i_ptr} is negative" if @i_ptr < 0
 
     instr = @program[@i_ptr]
 

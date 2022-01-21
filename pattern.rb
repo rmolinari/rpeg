@@ -517,6 +517,8 @@ class Pattern
       result << (type == SEQ ? "Seq:" : "Ordered Choice:")
       do_sub_pattern.call(left)
       do_sub_pattern.call(right)
+    when RULE
+      result << "nonterminal: #{data}"
     when REPEATED, NOT, AND, BEHIND
       result << "#{type_s}: "
       do_sub_pattern.call(child)
@@ -785,7 +787,7 @@ class Pattern
         # may reach there via another jump/commit/etc
         offset = start_line - idx
         dec = "->#{nonterminal}"
-        code[idx] = if code[idx + 1] && code[idx + 1].op_code == :return
+        code[idx] = if code[finaltarget(code, idx + 1)]&.op_code == :return
                       Instruction.new(i::JUMP, offset:, dec:)
                     else
                       Instruction.new(i::CALL, offset:, dec:)
@@ -894,7 +896,7 @@ class Pattern
   #
   # Find the final [absolute] destination of a sequence of jumps
   def finaltarget(program, idx)
-    idx = target(program, idx) while program[idx].op_code == Instruction::JUMP
+    idx = target(program, idx) while program[idx]&.op_code == Instruction::JUMP
     idx
   end
 
