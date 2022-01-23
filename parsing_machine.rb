@@ -218,12 +218,6 @@ class ParsingMachine
     end
   end
 
-  def program_to_s
-    @program_to_s ||= @program.each_with_index.map do |instr, i|
-      "#{i.to_s.rjust 3}: #{instr}"
-    end.join("\n")
-  end
-
   ########################################
   # Support for a debugger
 

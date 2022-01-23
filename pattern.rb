@@ -6,7 +6,7 @@
 
 require 'set'
 require 'must_be'
-# MustBe.disable
+#MustBe.disable
 
 require_relative 'captures'
 require_relative 'parsing_machine'
@@ -50,12 +50,29 @@ require_relative 'parsing_machine'
 #   continue to call them "table" captures even though there is no Table class in Ruby.
 #   - Changing the name to "Hash" captures implies an implementation that may not be accurate.
 #
+# Function captures
+#
+#   Various kinds of captures involve calling a function (proc) provided by client code. For example, the construction (patt / fn)
+# takes the captures made by patt and passes them as arguments to fn. Then the values returned by fn become the captures of the
+# expression. Lua is better than Ruby at distinguishing between a function that returns multiple values and one that returns a
+# single value that is an array. So, returns from function in contexts like this are treated as follows:
+#
+#   - [1, 2, 3]: multiple captures, 1, 2, 3.
+#     - this is the natural interpretation as it's the standard way that a Ruby function returns multiple values
+#   - [[1, 2, 3]]: a single capture that is an array
+#   - nil: no captures
+#     - even if the function says something like "return nil", the capture code has no way to distinguish between that and a
+#       function that returns nothing
+#   - [nil]: a single capture with value nil
+#     - the weirdest case, but I don't see an alternative
+#
 # TODO:
 # - program generation optimations
 #   - other pattern-based optimizations: need to scan through the LPEG code again
 #     - headfail(), getFirst(); need to understand them
 #   - profiling
 # - port LPEG's re module
+#   - this is making good progress
 class Pattern
   NODE_TYPES = %i[
     charset char any seq ordered_choice repeated not and
@@ -525,10 +542,13 @@ class Pattern
     when CAPTURE
       result << "Capture: #{capture} #{data.inspect}"
       do_sub_pattern.call(child)
+    when RUNTIME
+      result << "Runtime: #{capture} #{data.inspect}"
+      do_sub_pattern.call(child)
     when GRAMMAR
       result << "Grammar:"
       first = true
-      data.each do |nonterminal, rule_pattern|
+      child.each do |nonterminal, rule_pattern|
         prefix = "  #{nonterminal}: "
         first = true
         rule_pattern.to_s.split("\n").each do |line|
@@ -610,17 +630,19 @@ class Pattern
   ########################################
   # Code generation
 
+  # shorthand
+  def i
+    Instruction
+  end
+
   # follow_set
   # - the set of first characters accepted by whatever comes after us, or the full set of characters if nothing follows us
   #
   # dominating_test
   # - a TEST_CHAR, TEST_CHARSET, or TEST_ANY instruction that we can assume has succeeded and which might save us a little time
   # - see the tt argument sprinkled through the functions in LPEG's lpcode.c
-  def code(follow_set:, dominating_test: nil)
+  def code(follow_set: FULL_CHAR_SET, dominating_test: nil)
     return @code if @code
-
-    # shorthand
-    i = Instruction
 
     code = []
     case type
@@ -633,7 +655,7 @@ class Pattern
     when SEQ
       # See LPEG's codeseq1 (lpcode.c) for the handling of the dominating test (if any)
       # TODO: LPEG's optimization useing needfollow
-      code = left.code(follow_set: FULL_CHAR_SET, dominating_test:)
+      code = left.code(dominating_test:)
       if left.fixed_len != 0
         # /* can 'p1' consume anything? */
         dominating_test = nil # /* invalidate test */
@@ -689,7 +711,7 @@ class Pattern
           code += right_code
         end
       else
-        p1 = left.code(follow_set: FULL_CHAR_SET, dominating_test:)
+        p1 = left.code(dominating_test:)
         p2 = right.code(follow_set:)
 
         code << Instruction.new(i::CHOICE, offset: 2 + p1.size)
@@ -702,7 +724,7 @@ class Pattern
         # Special, quicker handling when the thing we are repeated over is a charset. See Ierusalimschy 4.3
         code << Instruction.new(i::SPAN, data: child.data)
       else
-        p = child.code(follow_set: FULL_CHAR_SET)
+        p = child.code
         code << Instruction.new(i::CHOICE, offset: 2 + p.size)
         code += p
         code << Instruction.new(i::PARTIAL_COMMIT, offset: -p.size)
@@ -713,7 +735,7 @@ class Pattern
         code << testset_code(first_set, 2)
         code << Instruction.new(i::FAIL)
       else
-        p = child.code(follow_set: FULL_CHAR_SET)
+        p = child.code
 
         code << Instruction.new(i::CHOICE, offset: 2 + p.size)
         code += p
@@ -726,7 +748,7 @@ class Pattern
       # ** optimization: fixedlen(p) = n ==> <&p> == <p>; behind n
       # ** (valid only when 'p' has no captures)
       # */
-      p = child.code(follow_set: FULL_CHAR_SET, dominating_test:)
+      p = child.code(dominating_test:)
       len = child.fixed_len
       if len && !child.has_captures?
         code += p
@@ -739,7 +761,7 @@ class Pattern
       end
     when BEHIND
       code << Instruction.new(i::BEHIND, aux: data) if data.positive?
-      code += child.code(follow_set: FULL_CHAR_SET)
+      code += child.code
     when CAPTURE
       c = child.code(follow_set:, dominating_test:)
       len = fixed_len
@@ -757,14 +779,18 @@ class Pattern
       code << Instruction.new(i::CLOSE_RUN_TIME, aux: { kind: Capture::CLOSE })
     when RULE
       code = child.code(follow_set:)
-
-      #code[0] = code.first.dup
       code.first.dec = data # decorate with the nonterminal, but clone first to avoid unexpected mutations
     when GRAMMAR
       start_line_of_nonterminal = {}
       full_rule_code = []
 
-      child.each do |rule|
+      # we need to put the initial nonterminal's rules first
+      initial_rule = child.find { |rule| rule.data == data }
+      raise "Cannot find initial rule, for #{data}" unless initial_rule
+
+      the_rules = [initial_rule] + child.find.reject { |r| r == initial_rule }
+
+      the_rules.each do |rule|
         nonterminal = rule.data
         start_line_of_nonterminal[nonterminal] = 2 + full_rule_code.size
         full_rule_code += rule.code(follow_set: FULL_CHAR_SET) + [Instruction.new(i::RETURN)]

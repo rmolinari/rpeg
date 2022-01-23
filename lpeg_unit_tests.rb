@@ -723,9 +723,7 @@ class TestsFromLpegCode < Test::Unit::TestCase
   end
 
   def test_re
-    $do_it = true
     assert_equal 1, RE.match("a", ".")
-    $do_it = false
     assert_equal 0, RE.match("a", "''")
     assert_equal 0, RE.match("", " ! . ")
 
@@ -753,12 +751,11 @@ class TestsFromLpegCode < Test::Unit::TestCase
     assert_equal 3, RE.match("cdx" , "'ab'? ('ccc' / ('cde' / 'cd'*)? / 'ccc') 'x'+")
     assert_equal 7, RE.match("abcdcdx" , "'ab'? ('ccc' / ('cde' / 'cd'*)? / 'ccc') 'x'+")
 
-    # TODO: get these to pass. Problems with a Grammar?
-    # assert_equal 3, RE.match("abc", "a <- (. a)?")
-    # b = "balanced <- '(' ([^()] / balanced)* ')'"
-    # assert RE.match("(abc)", b)
-    # assert RE.match("(a(b)((c) (d)))", b)
-    # assert_nil RE.match("(a(b ((c) (d)))", b)
+    assert_equal 3, RE.match("abc", "a <- (. a)?")
+    b = "balanced <- '(' ([^()] / balanced)* ')'"
+    assert RE.match("(abc)", b)
+    assert RE.match("(a(b)((c) (d)))", b)
+    assert_nil RE.match("(a(b ((c) (d)))", b)
   end
 
   # For isolating a failing test. Run with the -n flag to ruby.

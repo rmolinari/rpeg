@@ -332,10 +332,27 @@ class CaptureState
     proc = current_breadcrumb.data.must_be_a(Proc) # get the proc to call
     n = push_nested_captures # get the nested captures...
     args = pop(n) # ...pop them
-    result = Array(proc.call(*args)) # ... and pass them to the proc
-    num = result.size
-    result.each { |cap| push cap } # the results, if any, are the capture values
-    num
+    result = proc.call(*args) # ... and pass them to the proc
+    # the results, if any, are the capture values
+    #
+    # The natural thing to do here would be result = Array(result) and just enumerate them to push onto the capture stack. BUT,
+    # sometimes proc will return a Hash (when building a grammar in RE, for example) and Array({x: 1}) = [[:x, 1]], which is not
+    # what we want. At root, the issue is that Lua is better than Ruby at distinguishing between a function that returns multiple
+    # value and one that returns a single value that is an array. The following appears to be what we want, and remember that we
+    # need to write capture functions that are careful to distinguish between returning [1,2,3] (multiple captures) and [[1,2,3]]
+    # (single capture that is an array).
+    #
+    # Another gotcha: a function that returns nil does not give a capture, while one that returns [nil] has captured the single
+    # value nil.
+    if result.is_a?(Array)
+      result.each { |cap| push cap }
+      result.size
+    elsif result
+      push result
+      1
+    else
+      0
+    end
   end
 
   # This is LPEG's querycap (lpcap.c)
