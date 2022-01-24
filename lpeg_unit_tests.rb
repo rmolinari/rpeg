@@ -756,6 +756,100 @@ class TestsFromLpegCode < Test::Unit::TestCase
     assert RE.match("(abc)", b)
     assert RE.match("(a(b)((c) (d)))", b)
     assert_nil RE.match("(a(b ((c) (d)))", b)
+
+    b = RE.compile 'balanced <- "(" ([^()] / balanced)* ")"'
+    assert_equal b, m.P(b)
+    assert b.match("((((a))(b)))")
+
+    g = <<~GRAMM
+      S <- "0" B / "1" A / ""   -- balanced strings
+      A <- "0" S / "1" A A      -- one more 0
+      B <- "1" S / "0" B B      -- one more 1
+    GRAMM
+    assert_equal 8, RE.match("00011011", g)
+
+    g = <<~GRAMM
+      S <- ("0" B / "1" A)*
+      A <- "0" / "1" A A
+      B <- "1" / "0" B B
+    GRAMM
+    assert_equal 8, RE.match("00011011", g)
+    assert_equal 8, RE.match("000110110", g)
+    assert_equal 2, RE.match("011110110", g)
+    assert_equal 0, RE.match("000110010", g)
+
+    s = "aaaaaaaaaaaaaaaaaaaaaaaa"
+    assert_equal 3, RE.match(s, "'a'^3")
+    assert_equal 0, RE.match(s, "'a'^0")
+    assert_equal s.length, RE.match(s, "'a'^+3")
+    assert_nil RE.match(s, "'a'^+30")
+    assert_equal s.length, RE.match(s, "'a'^-30")
+    assert_equal 5, RE.match(s, "'a'^-5")
+    (0...(s.length)).each do |i|
+      assert RE.match(s, "'a'^+#{i}") >= i
+      assert RE.match(s, "'a'^-#{i + 1}") <= i + 1 # careful! In the Lua tests we start with i == 1, but -0 == 0
+      assert_equal i, RE.match(s, "'a'^#{i}")
+    end
+    assert_equal 18, RE.match("01234567890123456789", "[0-9]^3+")
+
+    assert_equal "4560123", RE.match("01234567890123456789", "({....}{...}) -> '%2%1'")
+    assert_equal %w[0 1 2 3 4 5 6 7 8 9], RE.match("0123456789", "{| {.}* |}")
+    assert_equal "0101", RE.match("012345", "{| (..) -> '%0%0' |}")[0]
+
+    assert_equal "c", RE.match("abcdef", "( {.} {.} {.} {.} {.} ) -> 3")
+    assert_equal "d", RE.match("abcdef", "( {:x: . :} {.} {.} {.} {.} ) -> 3")
+    assert_equal 5, RE.match("abcdef", "( {:x: . :} {.} {.} {.} {.} ) -> 0")
+
+    assert_nil RE.match("abcdef", "{:x: ({.} {.} {.}) -> 2 :} =x")
+    assert RE.match("abcbef", "{:x: ({.} {.} {.}) -> 2 :} =x")
+
+    # -- tests for comments in 're'
+    e = RE.compile <<~'GRAMM'
+      A  <- _B   -- \t \n %nl .<> <- -> --
+      _B <- 'x'  --
+    GRAMM
+    assert_equal 1, e.match('xy')
+
+    defs = {digits: m.R("09"), letters: m.R("az"), _: m.P("__")}
+    e = RE.compile("%letters (%letters / %digits)*", defs)
+    assert_equal 4, e.match("x123")
+    e = RE.compile("%_", defs)
+    assert_equal 2, e.match("__")
+
+    # Not used in the LPEG tests
+    # e = compile(<<~GRAM
+    #                S <- A+
+    #                A <- %letters+ B
+    #                B <- %digits+
+    #             GRAM
+    #             , defs)
+
+    math = { sin: ->(s) { Math.sin(Float(s)) } }
+    e = RE.compile("{[0-9]+'.'?[0-9]*} -> sin", math)
+    assert_equal Math.sin(2.34), e.match("2.34")
+
+    c = RE.compile(
+      <<~GRAM
+        longstring <- '[' {:init: '='* :} '[' close
+        close <- ']' =init ']' / . close
+      GRAM
+    )
+    assert_equal 16, c.match('[==[]]===]]]]==]===[]')
+    assert_equal 13, c.match('[[]=]====]=]]]==]===[]')
+    assert_nil c.match('[[]=]====]=]=]==]===[]')
+
+    c = RE.compile(" '[' {:init: '='* :} '[' (!(']' =init ']') .)* ']' =init ']' !. ")
+    assert c.match('[==[]]===]]]]==]')
+    assert c.match('[[]=]====]=][]==]===[]]')
+    assert_nil c.match('[[]=]====]=]=]==]===[]')
+
+    # Note: when a Lua function f(foo) returns mlutiple values x, y the expression f(foo) == x is true
+    assert_equal 3, RE.find("hi alalo", "{:x:..:} =x").first
+    assert_equal 3, RE.find("hi alalo", "{:x:..:} =x", 3).first
+    assert_nil RE.find("hi alalo", "{:x:..:} =x", 4)
+    assert_equal 5, RE.find("hi alalo", "{'al'}", 4).first
+    assert_equal 7, RE.find("hi aloalolo", "{:x:..:} =x").first
+    assert_equal 10, RE.find("alo alohi x x", "{:word:%w+:}%W*(=word)!%w").first
   end
 
   # For isolating a failing test. Run with the -n flag to ruby.

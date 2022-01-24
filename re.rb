@@ -16,7 +16,9 @@ module RE
   #
   # Oh. Maybe it is the Pattern build from the regexp-y thing.
   def compile(p, *defs)
-    # return p if Pattern.type(p) == "pattern" # -- already compiled
+    return p if p.is_a?(Pattern)
+
+    defs = [{}] if defs.empty? # for the sake of p_Def, below
 
     cp = PATTERN.match(p, 0, *defs)
     raise "incorrect pattern" unless cp
@@ -38,8 +40,8 @@ module RE
     cp = @fmem[p]
     unless cp
       cp = compile(p) / 0
-      cp = Pattern.P([m.Cp() * cp * mm.Cp() + 1 * mm.V(0)])
-      fmem[p] = cp
+      cp = Pattern.P([Pattern.Cp() * cp * Pattern.Cp() + 1 * Pattern.V(0)])
+      @fmem[p] = cp
     end
 
     i, e = cp.match(s, i)
@@ -71,8 +73,8 @@ module RE
     alnum = alpha + digit
     space = m.S(" \n\t")
     printable = m.R(' ~')
+    word = alnum
     x = {
-      nl: m.P("\n"),
       alpha:,
       digit:,
       lower:,
@@ -82,13 +84,15 @@ module RE
       alnum:,
       xdigit: digit + m.R("af", "AF"),
       punct: printable - (space + alnum),
-      cntrl: any - printable
+      cntrl: any - printable,
+      word:
     }
-    %i[alpha cntrl digit graph lower punct space upper alnum xdigit].each do |key|
+    x.keys.each do |key|
       short = key.to_s[0].to_sym
       x[short] = x[key]
       x[short.upcase] = any - x[key]
     end
+    x[:nl] = m.P("\n")
     predef = x
 
     # p_I = m.P(->(s,i) { print "#{i}   #{s[0, i-2]}"; return i }) # Diagnostic?
@@ -106,10 +110,18 @@ module RE
     p_String = "'" * m.C((any - "'")**0) * "'" + '"' * m.C((any - '"')**0) * '"'
 
     defined = "%" * p_Def / lambda do |c, defs|
-      cat = (defs && defs[c]) || predef[c]
+      cat = (defs && (defs[c] || defs[c.to_sym])) || predef[c.to_sym]
       raise "name '#{c}' undefined" unless cat
 
       cat
+    end
+
+    # Why do we have this as well as defined ?
+    getdef = lambda do |id, defs|
+      c = defs && (defs[id] || defs[id.to_sym])
+      raise "undefined name: #{id}" unless c
+
+      c
     end
 
     p_Range = m.Cs(any * (m.P("-") / "") * (any - "]")) / ->(s) { m.R(s) }
@@ -148,13 +160,6 @@ module RE
       end
     end
 
-    getdef = lambda do |id, defs|
-      c = defs && defs[id]
-      raise "undefined name: #{id}" unless c
-
-      c
-    end
-
     adddef = lambda do |t, k, exp|
       if t[k] then
         error("'#{k}' already defined as a rule")
@@ -183,6 +188,7 @@ module RE
     patt_rpt = ->(p1, n)  { p1**n }
     patt_replace = ->(p1, x) { p1 / x }
     pos_capture = ->(*) { m.Cp }
+    tonumber = ->(s) { Integer(s) }
 
     call_patt = lambda do |fun|
       ->(*args) { Pattern.send(fun, *args) }
@@ -206,7 +212,7 @@ module RE
                        m.P("?") * m.Cc(-1, patt_rpt) +
                        "^" * (
                          m.Cg(num * m.Cc(mult)) +
-                         m.Cg(m.C(m.S("+-") * m.R("09")**1) * m.Cc(patt_rpt))
+                         m.Cg(m.C(m.S("+-") * m.R("09")**1) / tonumber * m.Cc(patt_rpt))
                        ) +
                        "->" * p_S * (
                          m.Cg((p_String + num) * m.Cc(patt_replace)) +
