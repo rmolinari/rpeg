@@ -607,8 +607,50 @@ class Pattern
     Analysis.first_set(self, follow_set)
   end
 
+  # From checkloops in lptree.c
+  #
+  # /*
+  # ** Check whether a tree has potential infinite loops
+  # */
+  def loops?
+    return true if type == REPEATED && child.nullable?
+
+    # /* sub-grammars already checked */, i.e., by verify_grammar
+    return false if type == GRAMMAR || type == CALL
+
+    case num_children
+    when 1
+      child.loops?
+    when 2
+      left.loops? || right.loops?
+    end
+  end
+
+  # LPEG's headfail
+  #
+  # /*
+  # ** If 'headfail(tree)' true, then 'tree' can fail only depending on the
+  # ** next character of the subject.
+  # */
   def head_fail?
-    Analysis.head_fail?(self)
+    case type
+    when CHAR, CHARSET, ANY, NFALSE
+      true
+    when NTRUE, REPEATED, RUNTIME, NOT
+      false
+    when CAPTURE, RULE, AND, CALL
+      child.head_fail?
+    when GRAMMAR
+      child.first.head_fail?
+    when SEQ
+      return false unless right.nofail?
+
+      left.head_fail?
+    when ORDERED_CHOICE
+      left.head_fail? && right.head_fail?
+    else
+      raise "Unhandled node type #{type}"
+    end
   end
 
   # TODO: consider recurising via a #children method. Then we can handle the necessary rules in a GRAMMAR just once.
@@ -1207,7 +1249,7 @@ class Pattern
       # /* check for infinite loops inside rules */
       grammar.child.each do |rule|
         verify_rule(rule)
-        raise "Grammar has potential infinite loop in rule '#{rule.data}'" if loops?(rule)
+        raise "Grammar has potential infinite loop in rule '#{rule.data}'" if rule.loops?
       end
     end
 
@@ -1262,26 +1304,6 @@ class Pattern
       end
 
       local_rec.call(rule, 0)
-    end
-
-    # From checkloops in lptree.c
-    #
-    # /*
-    # ** Check whether a tree has potential infinite loops
-    # */
-    def loops?(pattern)
-      return true if pattern.type == REPEATED && pattern.child.nullable?
-
-      # /* sub-grammars already checked */, i.e., by verify_grammar
-      return false if pattern.type == GRAMMAR
-      return false if pattern.type == CALL
-
-      case pattern.num_children
-      when 1
-        loops?(pattern.child)
-      when 2
-        loops?(pattern.left) || loops?(pattern.right)
-      end
     end
 
     # From callrecursive in LPEG's lpcode.c
@@ -1406,8 +1428,6 @@ class Pattern
     #
     # I don't really understand what is going on here. I'm hoping it will make more sense as I port it. I think we pass in follow
     # and return the int and firstset.
-    #
-    #
     def first_set(pattern, follow_set)
       case pattern.type
       when CHAR, CHARSET, ANY
@@ -1464,33 +1484,6 @@ class Pattern
           e, = first_set(pattern.child, follow_set)
           [e | 1, follow_set] # /* always can accept the empty string */
         end
-      else
-        raise "Unhandled node type #{pattern.type}"
-      end
-    end
-
-    # LPEG's headfail
-    #
-    # /*
-    # ** If 'headfail(tree)' true, then 'tree' can fail only depending on the
-    # ** next character of the subject.
-    # */
-    def head_fail?(pattern)
-      case pattern.type
-      when CHAR, CHARSET, ANY, NFALSE
-        true
-      when NTRUE, REPEATED, RUNTIME, NOT
-        false
-      when CAPTURE, RULE, AND, CALL
-        head_fail?(pattern.child)
-      when GRAMMAR
-        head_fail?(pattern.child.first)
-      when SEQ
-        return false unless pattern.right.nofail?
-
-        head_fail?(pattern.left)
-      when ORDERED_CHOICE
-        head_fail?(pattern.left) && head_fail?(pattern.right)
       else
         raise "Unhandled node type #{pattern.type}"
       end
