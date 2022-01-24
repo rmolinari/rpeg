@@ -451,7 +451,7 @@ class CaptureState
     when Capture::STRING
       extract_string_capture
     when Capture::SUBST
-      extract_subst_cap
+      extract_subst_capture
     else
       n = push_capture
       return nil if n.zero?
@@ -519,7 +519,7 @@ class CaptureState
       until current_breadcrumb.close?
         if result.size > MAX_STR_CAPS
           seek_next! # just skip it
-        elsif current_breadcrumb.kind == Capture::STRING
+        elsif current_breadcrumb.kind == Capture::SIMPLE
           result += str_caps # get the matches recursively
         else
           # Not a string

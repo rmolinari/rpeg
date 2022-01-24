@@ -850,6 +850,115 @@ class TestsFromLpegCode < Test::Unit::TestCase
     assert_equal 5, RE.find("hi alalo", "{'al'}", 4).first
     assert_equal 7, RE.find("hi aloalolo", "{:x:..:} =x").first
     assert_equal 10, RE.find("alo alohi x x", "{:word:%w+:}%W*(=word)!%w").first
+
+    # -- re.find discards any captures
+    a, b, c = RE.find("alo", "{.}{'o'}")
+    assert_equal 1, a
+    assert_equal 2, b
+    assert_nil c
+
+    match = lambda do |s, p|
+      i, e = RE.find(s,p)
+      return s[i..e] if i
+    end
+    assert_equal "alo", match.call("alo alo", '[a-z]+')
+    assert_nil match.call("alo alo", '{:x: [a-z]+ :} =x')
+    assert_equal "alo alo", match.call("alo alo", "{:x: [a-z]+ :} ' ' =x")
+
+    assert_equal "xlo xlo", RE.gsub("alo alo", "[abc]", "x")
+    assert_equal ". .", RE.gsub("alo alo", "%w+", ".")
+    assert_equal "hI, hOw ArE yOU", RE.gsub("hi, how are you", "[aeiou]", ->(c) { c.upcase } )
+
+    s = 'hi [[a comment[=]=] ending here]] and [=[another]]=]]'
+    c = RE.compile " '[' {:i: '='* :} '[' (!(']' =i ']') .)* ']' { =i } ']' "
+    assert_equal 'hi  and =]', RE.gsub(s, c, "%2")
+    assert_equal s, RE.gsub(s, c, "%0")
+    assert_equal "=", RE.gsub('[=[hi]=]', c, "%2")
+
+    assert_equal 0, RE.find("", "!.").first
+    assert_equal 3, RE.find("alo", "!.").first
+
+    # TODO: make this work.
+    #
+    # Problem: Lua's table is a Hashtable/array mashup. In particular, t[nil] = foo adds foo to the table without a key, sort of
+    # like appending to an array. But the we we return table captures from RPEG is messy and should be rethought. It's constructions
+    # like this that suggest we should always return a hash, with a special key :anon for the array of anonymous captures.
+    #
+    # addtag = lambda do |s, i, t, tag = nil|
+    #   # This is a problem due to how we return 'table' captures. Ugh.
+    #   t[:tag] = tag
+    #   [i, t]
+    # end
+
+    # grammer = <<~GRAM
+    #   doc <- block !.
+    #   block <- (start {| (block / { [^<]+ })* |} end?) => addtag
+    #   start <- '<' {:tag: [a-z]+ :} '>'
+    #   end <- '</' { =tag } '>'
+    # GRAM
+
+    # c = RE.compile(grammer, { addtag: })
+    # x = c.match('<x>hi<b>hello</b>but<b>totheend</x>')
+    # assert_equal ({ tag: 'x', 0 => 'hi', 1 => { tag: 'b', 0 => 'hello' }, 2 => 'but', 3 => ['totheend'] }), x
+
+    # -- test for folding captures
+    grammar = <<~GRAM
+      S <- (number (%s+ number)*) ~> add
+      number <- %d+ -> tonumber
+    GRAM
+    c = RE.compile(
+      grammar,
+      { tonumber: ->(str) { Integer(str) }, add: ->(a,b) { a + b } }
+    )
+    assert_equal 3 + 401 + 50, c.match("3 401 50")
+
+    # -- tests for look-ahead captures
+    assert_equal ["", "alo", ""], RE.match("alo", "&(&{.}) !{'b'} {&(...)} &{..} {...} {!.}")
+
+    assert_equal "AallooAalloo",
+                 RE.match(
+                   "aloalo",
+                   "{~ (((&'al' {.}) -> 'A%1' / (&%l {.}) -> '%1%1') / .)* ~}"
+                 )
+
+    # -- bug in 0.9 (and older versions), due to captures in look-aheads
+    x = RE.compile " {~ (&(. ([a-z]* -> '*')) ([a-z]+ -> '+') ' '*)* ~} "
+    assert_equal "+ +", x.match("alo alo")
+
+    # -- valid capture in look-ahead (used inside the look-ahead itself)
+    x = RE.compile ' S <- &({:two: .. :} . =two) {[a-z]+} / . S '
+    assert_equal "aloalo", x.match("hello aloaLo aloalo xuxu")
+
+    # -- nested grammars
+    p = RE.compile(
+      <<~GRAM
+        s <- a b !.
+        b <- ( x <- ('b' x)? )
+        a <- ( x <- 'a' x? )
+      GRAM
+    )
+    assert p.match('aaabbb')
+    assert p.match('aaa')
+    assert_nil p.match('bbb')
+    assert_nil p.match('aaabbba')
+
+    # -- testing nested substitutions x string captures
+
+    p = RE.compile(
+      <<~GRAM
+        text <- {~ item* ~}
+        item <- macro / [^()] / '(' item* ')'
+        arg <- ' '* {~ (!',' item)* ~}
+        args <- '(' arg (',' arg)* ')'
+        macro <- ('apply' args) -> '%1(%2)'
+               / ('add' args) -> '%1 + %2'
+               / ('mul' args) -> '%1 * %2'
+      GRAM
+    )
+    assert_equal "a * b + f(x)", p.match("add(mul(a,b), apply(f,x))")
+
+    rev = RE.compile(" R <- (!.) -> '' / ({.} R) -> '%2%1' ")
+    assert_equal "9876543210", rev.match("0123456789")
   end
 
   # For isolating a failing test. Run with the -n flag to ruby.

@@ -805,6 +805,8 @@ class Pattern
         next unless instr.op_code == CALL
 
         nonterminal = instr.offset # still symbolic
+        next if nonterminal.is_a?(Integer) # ... expect when we're in a subgrammar, since it has already been fixed up.
+
         start_line = start_line_of_nonterminal[nonterminal]
         raise "Nonterminal #{nonterminal} does not have a rule in grammar" unless start_line
 

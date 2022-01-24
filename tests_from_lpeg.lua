@@ -545,74 +545,9 @@ local match, compile = re.match, re.compile
 
 
 
--- tests for 're' with pre-definitions
-function eq (_, _, a, b) return a == b end
-
 -- re.find discards any captures
-local a,b,c = re.find("alo", "{.}{'o'}")
-assert(a == 2 and b == 3 and c == nil)
-
-local function match (s,p)
-  local i,e = re.find(s,p)
-  if i then return s:sub(i, e) end
-end
-assert(match("alo alo", '[a-z]+') == "alo")
-assert(match("alo alo", '{:x: [a-z]+ :} =x') == nil)
-assert(match("alo alo", "{:x: [a-z]+ :} ' ' =x") == "alo alo")
-
-assert(re.gsub("alo alo", "[abc]", "x") == "xlo xlo")
-assert(re.gsub("alo alo", "%w+", ".") == ". .")
-assert(re.gsub("hi, how are you", "[aeiou]", string.upper) ==
-               "hI, hOw ArE yOU")
-
-s = 'hi [[a comment[=]=] ending here]] and [=[another]]=]]'
-c = re.compile" '[' {:i: '='* :} '[' (!(']' =i ']') .)* ']' { =i } ']' "
-assert(re.gsub(s, c, "%2") == 'hi  and =]')
-assert(re.gsub(s, c, "%0") == s)
-assert(re.gsub('[=[hi]=]', c, "%2") == '=')
-
-assert(re.find("", "!.") == 1)
-assert(re.find("alo", "!.") == 4)
-
-function addtag (s, i, t, tag) t.tag = tag; return i, t end
-
-c = re.compile([[
-  doc <- block !.
-  block <- (start {| (block / { [^<]+ })* |} end?) => addtag
-  start <- '<' {:tag: [a-z]+ :} '>'
-  end <- '</' { =tag } '>'
-]], {addtag = addtag})
-
-x = c:match[[
-<x>hi<b>hello</b>but<b>totheend</x>]]
-checkeq(x, {tag='x', 'hi', {tag = 'b', 'hello'}, 'but',
-                     {'totheend'}})
 
 
--- test for folding captures
-c = re.compile([[
-  S <- (number (%s+ number)*) ~> add
-  number <- %d+ -> tonumber
-]], {tonumber = tonumber, add = function (a,b) return a + b end})
-assert(c:match("3 401 50") == 3 + 401 + 50)
-
--- tests for look-ahead captures
-x = {re.match("alo", "&(&{.}) !{'b'} {&(...)} &{..} {...} {!.}")}
-checkeq(x, {"", "alo", ""})
-
-assert(re.match("aloalo",
-   "{~ (((&'al' {.}) -> 'A%1' / (&%l {.}) -> '%1%1') / .)* ~}")
-       == "AallooAalloo")
-
--- bug in 0.9 (and older versions), due to captures in look-aheads
-x = re.compile[[   {~ (&(. ([a-z]* -> '*')) ([a-z]+ -> '+') ' '*)* ~}  ]]
-assert(x:match"alo alo" == "+ +")
-
--- valid capture in look-ahead (used inside the look-ahead itself)
-x = re.compile[[
-      S <- &({:two: .. :} . =two) {[a-z]+} / . S
-]]
-assert(x:match("hello aloaLo aloalo xuxu") == "aloalo")
 
 
 p = re.compile[[
@@ -627,25 +562,13 @@ t= p:match[[
 __1.1
 __1.2
 ____1.2.1
-____
+____n
 2
 __2.1
 ]]
 checkeq(t, {"1", {"1.1", "1.2", {"1.2.1", "", ident = "____"}, ident = "__"},
             "2", {"2.1", ident = "__"}, ident = ""})
 
-
--- nested grammars
-p = re.compile[[
-       s <- a b !.
-       b <- ( x <- ('b' x)? )
-       a <- ( x <- 'a' x? )
-]]
-
-assert(p:match'aaabbb')
-assert(p:match'aaa')
-assert(not p:match'bbb')
-assert(not p:match'aaabbba')
 
 -- testing groups
 t = {re.match("abc", "{:S <- {:.:} {S} / '':}")}
@@ -702,23 +625,6 @@ eqlpeggsub("[%W%S]", "%W%S")
 re.updatelocale()
 
 
--- testing nested substitutions x string captures
-
-p = re.compile[[
-      text <- {~ item* ~}
-      item <- macro / [^()] / '(' item* ')'
-      arg <- ' '* {~ (!',' item)* ~}
-      args <- '(' arg (',' arg)* ')'
-      macro <- ('apply' args) -> '%1(%2)'
-             / ('add' args) -> '%1 + %2'
-             / ('mul' args) -> '%1 * %2'
-]]
-
-assert(p:match"add(mul(a,b), apply(f,x))" == "a * b + f(x)")
-
-rev = re.compile[[ R <- (!.) -> '' / ({.} R) -> '%2%1']]
-
-assert(rev:match"0123456789" == "9876543210")
 
 
 -- testing error messages in re
