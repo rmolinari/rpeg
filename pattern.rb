@@ -595,17 +595,45 @@ class Pattern
     @nofail = Analysis.nofail?(self)
   end
 
+  # fixedlen from LPEG's lpcode.h
+  #
+  # /*
+  # ** number of characters to match a pattern (or -1 if variable)
+  # */
+  #
+  # We return nil if the node's matches are not all of the same length
   def fixed_len
-    Analysis.fixed_len(self)
-  end
+    case type
+    when CHARSET, CHAR, ANY
+      1
+    when NOT, AND, NTRUE, NFALSE, BEHIND
+      0
+    when REPEATED, OPEN_CALL, RUNTIME
+      nil
+    when CAPTURE, RULE
+      child.fixed_len
+    when GRAMMAR
+      child.first.fixed_len # the first rule is the initial nonterminal
+    when CALL
+      call_recursive(:fixed_len, nil)
+    when SEQ
+      left_len = left.fixed_len
+      return nil unless left_len
 
-  def has_captures?
-    Analysis.has_captures?(self)
-  end
+      right_len = right.fixed_len
+      return nil unless right_len
 
-  # def first_set(follow_set = FULL_CHAR_SET)
-  #   Analysis.first_set(self, follow_set)
-  # end
+      left_len + right_len
+    when ORDERED_CHOICE
+      left_len = left.fixed_len
+      return nil unless left_len
+
+      right_len = right.fixed_len
+      right_len == left_len ? right_len : nil
+    else
+      raise "Unhandled node type #{type}"
+    end
+  end
 
   # From checkloops in lptree.c
   #
@@ -623,6 +651,61 @@ class Pattern
       child.loops?
     when 2
       left.loops? || right.loops?
+    end
+  end
+
+  # From callrecursive in LPEG's lpcode.c
+  #
+  # /*
+  # ** Visit a TCall node taking care to stop recursion. If node not yet
+  # ** visited, return 'f(sib2(tree))', otherwise return 'def' (default
+  # ** value)
+  # */
+  #
+  # This method acts as a circuit breaker for structural recursion that might otherwise get in a loop among mutually recursive
+  # grammar rules.
+  #
+  # It's janky, but we follow LPEG's approach of hijacking the key field (which we call data) to keep track of the recursion
+  def call_recursive(func, default)
+    type.must_be CALL
+    child.type.must_be RULE
+
+    already_visited = :already_visited
+
+    saved_data = @data
+
+    if saved_data == already_visited
+      default
+    else
+      # first time we've been here
+      @data = already_visited
+      result = send(func)
+      @data = saved_data
+      result
+    end
+  end
+
+  # From hascaptures in LPEG's lpcode.c
+  # /*
+  # ** Check whether a pattern tree has captures
+  # */
+  def has_captures?
+    case type
+    when CAPTURE, RUNTIME
+      true
+    when CALL
+      call_recursive(:has_captures?, false)
+    when GRAMMAR
+      child.any? { |rule| rule.has_captures? }
+    else
+      case num_children
+      when 0
+        false
+      when 1
+        child.has_captures?
+      when 2
+        left.has_captures? || right.has_captures?
+      end
     end
   end
 
@@ -1279,10 +1362,9 @@ class Pattern
     # **    p is nullable => nullable(p)
     # **    nofail(p) => p cannot fail
     #
-    # ** The function assumes that TOpenCall is not nullable; this will be checked again when the grammar is fixed.  Run-time
-    # ** captures
-
-    # ** can do whatever they want, so the result is conservative.
+    # ** The function assumes that TOpenCall is not nullable; this will be checked again when the grammar is fixed.
+    #
+    # ** Run-time captures can do whatever they want, so the result is conservative.
     # */
     def check_pred(pattern, pred)
       raise "Bad check predicate #{pred}" unless CHECK_PREDICATES.include?(pred)
@@ -1356,6 +1438,8 @@ class Pattern
     # ** counts the elements in 'passed'.
     # ** Assume ktable at the top of the stack.
     # */
+    #
+    # TODO: does it make sense to move this to Pattern proper?
     def verify_rule(rule)
       rules_seen = []
 
@@ -1391,102 +1475,6 @@ class Pattern
       end
 
       local_rec.call(rule, 0)
-    end
-
-    # From callrecursive in LPEG's lpcode.c
-    #
-    # /*
-    # ** Visit a TCall node taking care to stop recursion. If node not yet
-    # ** visited, return 'f(sib2(tree))', otherwise return 'def' (default
-    # ** value)
-    # */
-    #
-    # This method acts as a circuit breaker for structural recursion that might otherwise get in a loop among mutually recursive
-    # grammar rules.
-    #
-    # It's janky, but we follow LPEG's approach of hijacking the key field (which we call data) to keep track of the recursion
-    def call_recursive(call_node, func, default)
-      call_node.must_be
-      call_node.type.must_be CALL
-      call_node.child.type.must_be RULE
-
-      already_visited = :already_visited
-
-      data = call_node.data
-
-      if data == already_visited
-        default
-      else
-        # first time we've been here
-        call_node.data = already_visited
-        result = func.call(call_node)
-        call_node.data = data
-        result
-      end
-    end
-
-    # From hascaptures in LPEG's lpcode.c
-    # /*
-    # ** Check whether a pattern tree has captures
-    # */
-    def has_captures?(node)
-      case node.type
-      when CAPTURE, RUNTIME
-        true
-      when CALL
-        call_recursive(node, ->(n) { has_captures?(n) }, false)
-      when GRAMMAR
-        node.child.any? { |rule| has_captures?(rule) }
-      else
-        case node.num_children
-        when 0
-          false
-        when 1
-          has_captures?(node.child)
-        when 2
-          has_captures?(node.left) || has_captures?(node.right)
-        end
-      end
-    end
-
-    # fixedlen from LPEG's lpcode.h
-    #
-    # /*
-    # ** number of characters to match a pattern (or -1 if variable)
-    # */
-    #
-    # We return nil if the node's matches are not all of the same length
-    def fixed_len(node)
-      case node.type
-      when CHARSET, CHAR, ANY
-        1
-      when NOT, AND, NTRUE, NFALSE, BEHIND
-        0
-      when REPEATED, OPEN_CALL, RUNTIME
-        nil
-      when CAPTURE, RULE
-        fixed_len(node.child)
-      when GRAMMAR
-        fixed_len(node.child.first) # the first rule is the initial nonterminal
-      when CALL
-        call_recursive(node, ->(n) { fixed_len(n) }, nil)
-      when SEQ
-        left_len = fixed_len(node.left)
-        return nil unless left_len
-
-        right_len = fixed_len(node.right)
-        return nil unless right_len
-
-        left_len + right_len
-      when ORDERED_CHOICE
-        left_len = fixed_len(node.left)
-        return nil unless left_len
-
-        right_len = fixed_len(node.right)
-        right_len == left_len ? right_len : nil
-      else
-        raise "Unhandled node type #{node.type}"
-      end
     end
   end
 
