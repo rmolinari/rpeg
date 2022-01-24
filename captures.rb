@@ -178,7 +178,7 @@ class CaptureState
     when Capture::FOLD
       push_fold_capture
     when Capture::STRING
-      self.push extract_string_capture
+      push extract_string_capture
       1
     when Capture::NUM
       push_num_capture
@@ -465,7 +465,6 @@ class CaptureState
     end
   end
 
-
   # In LPEG this logic is split between the main VM loop (lpvm.c) and the runtimecap function (lpcap.c). As noted above, the LPEG
   # code is complicated by the need to manage references to objects living on the Lua stack to avoid C-side memory leaks. We don't
   # have to worry about such things
@@ -512,9 +511,7 @@ class CaptureState
     result << first_aux
 
     first_is_full = current_breadcrumb.full?
-    if first_is_full
-      result[0].subject_end = current_breadcrumb.end_index
-    else
+    unless first_is_full
       advance # move past the Open
       until current_breadcrumb.close?
         if result.size > MAX_STR_CAPS
@@ -530,8 +527,8 @@ class CaptureState
           result << aux
         end
       end
-      result[0].subject_end = current_breadcrumb.end_index
     end
+    result[0].subject_end = current_breadcrumb.end_index
     advance # skip capture close/full capture
     result
   end
@@ -607,10 +604,14 @@ class CaptureState
   # partially rotate the captures to make what is currently the final value the n-th from last value. For example, if @captures is
   # currently [0, 1, 2, 3, 4], then calling munge_last(3) makes it [0, 1, 4, 2, 3]. Now 4 (previously the last value) is third
   # from last. When n == 1 this is a no-op
-  def munge_last!(n)
-    return if n == 1
-    raise "Bad munge argument" unless n.positive?
+  def munge_last!(num)
+    return if num == 1
+    raise "Bad munge argument" unless num.positive?
+    raise "Not enough values in array to munge it" if num > @captures.size
 
-    @captures[-n...] = @captures[-n...].rotate(-1)
+    tail = @captures.pop(num)
+    last = tail.pop
+    @captures << last
+    @captures += tail
   end
 end

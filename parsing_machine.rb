@@ -4,12 +4,13 @@ require_relative 'captures'
 #
 # - op_code: the instruction op
 # - offset: the address offset used in jumps, calls, etc.
-# - aux: extra information used by instruction like capture
+# - aux: extra information used by instructions like capture
 #   - in LPEG this is used to carefully pack data by bit-twiddling, etc., but we can use anything, such as structs, etc., as needed
 # - data: this is called "key" in LPEG and is used to store pointers to Lua-based objects, etc.
 #   - we will just store Ruby objects here.
-#   - it contains things like the Set/Range of characters for Charset instructions, the character count for Any instructions, etc.
-# - dec[oration]: other things like labels that might be useful later in debugging, etc.
+#   - it contains things like the set of characters for Charset instructions, etc.
+# - dec: "decorations" for other things like labels that might be useful later in debugging, etc.
+#   - it is ignored by the VM
 class Instruction
   OP_CODES = %i[
     char charset any jump choice call return commit back_commit
@@ -42,9 +43,7 @@ class Instruction
     str = (dec || "").to_s.rjust(DECORATION_WIDTH) + " :"
     str << op_code.to_s.upcase.rjust(OP_WIDTH + 1)
 
-    if [TEST_CHAR, TEST_ANY, TEST_CHARSET].include?(op_code)
-      str << " offset: #{offset}"
-    end
+    str << " offset: #{offset}" if [TEST_CHAR, TEST_ANY, TEST_CHARSET].include?(op_code)
 
     case op_code
     when CHAR, TEST_CHAR
@@ -263,11 +262,7 @@ class ParsingMachine
   # it: the following test is expected to do so. During code generation the "currently controlling" TEST_FOO is passed along so
   # followup checks can be optimized. See codechar and codecharset in lpcode.c.
   private def test_char(success, offset)
-    if success
-      @i_ptr += 1
-    else
-      @i_ptr += offset
-    end
+    @i_ptr += success ? 1 : offset
   end
 
   # Not for the FAIL op_code, but for when the instruction pointer is :fail

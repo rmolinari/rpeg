@@ -6,7 +6,7 @@
 
 require 'set'
 require 'must_be'
-#MustBe.disable
+# MustBe.disable
 
 require_relative 'captures'
 require_relative 'parsing_machine'
@@ -1292,8 +1292,8 @@ class Pattern
     # ** value)
     # */
     #
-    # This method acts as a circuit breaker for structural recursion that might otherwise get in a loop among mutually
-    # recursive grammar rules.
+    # This method acts as a circuit breaker for structural recursion that might otherwise get in a loop among mutually recursive
+    # grammar rules.
     #
     # It's janky, but we follow LPEG's approach of hijacking the key field (which we call data) to keep track of the recursion
     def call_recursive(call_node, func, default)
