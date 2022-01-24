@@ -586,13 +586,68 @@ class Pattern
   def nullable?
     return @nullable if defined? @nullable
 
-    @nullable = Analysis.nullable?(self)
+    @nullable = check_pred(:nullable)
   end
 
   def nofail?
     return @nofail if defined? @nofail
 
-    @nofail = Analysis.nofail?(self)
+    @nofail = check_pred(:nofail)
+  end
+
+  # The is lpeg's checkaux from lpcode.c. Comment from that function (reformatted):
+  #
+  # /*
+  # ** Checks how a pattern behaves regarding the empty string, in one of two different ways:
+  #
+  # ** - A pattern is *nullable* if it can match without consuming any character;
+  # ** - A pattern is *nofail* if it never fails for any string (including the empty string).
+  #
+  # ** The difference is only for predicates and run-time captures; for other patterns, the two properties are equivalent.  (With
+  # ** predicates, &'a' is nullable but not nofail. Of course, nofail => nullable.)
+  #
+  # ** These functions are all convervative in the following way:
+  # **    p is nullable => nullable(p)
+  # **    nofail(p) => p cannot fail
+  #
+  # ** The function assumes that TOpenCall is not nullable; this will be checked again when the grammar is fixed.
+  #
+  # ** Run-time captures can do whatever they want, so the result is conservative.
+  # */
+  def check_pred(pred)
+    raise "Bad check predicate #{pred}" unless %i[nullable nofail].include?(pred)
+
+    case type
+    when CHAR, CHARSET, ANY, OPEN_CALL, NFALSE
+      # Not nullable; for open_call this is a blind assumption
+      false
+    when NTRUE, REPEATED
+      true
+    when NOT, BEHIND
+      # can match empty, but can fail
+      pred != :nofail
+    when AND
+      # can match empty; can fail exactly when body can
+      return true if pred == :nullable
+
+      child.check_pred(pred)
+    when RUNTIME
+      # can fail; match empty iff body does
+      return false if pred == :nofail
+
+      child.check_pred(pred)
+    when SEQ
+      left.check_pred(pred) && right.check_pred(pred)
+    when ORDERED_CHOICE
+      left.check_pred(pred) || right.check_pred(pred)
+    when GRAMMAR
+      # Strings are matched by the initial nonterminal
+      child.first.check_pred(pred)
+    when CALL, RULE, CAPTURE
+      child.check_pred(pred)
+    else
+      raise "Unhandled pattern type #{type}"
+    end
   end
 
   # fixedlen from LPEG's lpcode.h
@@ -1335,82 +1390,6 @@ class Pattern
   # Namespace for some analysis methods
   module Analysis
     extend self
-
-    CHECK_PREDICATES = %i[nullable nofail].freeze
-
-    # These two are cached in pattern.nullable? and pattern.nofail?
-    def nullable?(pattern)
-      check_pred(Pattern.P(pattern), :nullable)
-    end
-
-    def nofail?(pattern)
-      check_pred(Pattern.P(pattern), :nofail)
-    end
-
-    # The is lpeg's checkaux from lpcode.c. Comment from that function (reformatted):
-    #
-    # /*
-    # ** Checks how a pattern behaves regarding the empty string, in one of two different ways:
-    #
-    # ** - A pattern is *nullable* if it can match without consuming any character;
-    # ** - A pattern is *nofail* if it never fails for any string (including the empty string).
-    #
-    # ** The difference is only for predicates and run-time captures; for other patterns, the two properties are equivalent.  (With
-    # ** predicates, &'a' is nullable but not nofail. Of course, nofail => nullable.)
-    #
-    # ** These functions are all convervative in the following way:
-    # **    p is nullable => nullable(p)
-    # **    nofail(p) => p cannot fail
-    #
-    # ** The function assumes that TOpenCall is not nullable; this will be checked again when the grammar is fixed.
-    #
-    # ** Run-time captures can do whatever they want, so the result is conservative.
-    # */
-    def check_pred(pattern, pred)
-      raise "Bad check predicate #{pred}" unless CHECK_PREDICATES.include?(pred)
-
-      # loop to eliminate some tail calls, as in the LPEG code. I don't think it's really necessary - my implementation is not going
-      # to be fast overall - but let's try a new technique.
-      loop do
-        case pattern.type
-        when CHAR, CHARSET, ANY, OPEN_CALL, NFALSE
-          # Not nullable; for open_call this is a blind assumption
-          return false
-        when NTRUE, REPEATED
-          return true
-        when NOT, BEHIND
-          # can match empty, but can fail
-          return (pred != :nofail)
-        when AND
-          # can match empty; can fail exactly when body can
-          return true if pred == :nullable
-
-          pattern = pattern.child
-        when RUNTIME
-          # can fail; match empty iff body does
-          return false if pred == :nofail
-
-          pattern = pattern.child
-        when SEQ
-          return false unless check_pred(pattern.left, pred)
-
-          pattern = pattern.right
-        when ORDERED_CHOICE
-          return true if check_pred(pattern.left, pred)
-
-          pattern = pattern.right
-        when GRAMMAR
-          # Strings are matched by the initial nonterminal
-          first_rule = pattern.child.first
-          pattern = first_rule.child
-        when CALL, RULE, CAPTURE
-          # The call's rule, rule's pattern, and capture's pattern are in child
-          pattern = pattern.child
-        else
-          raise "Unhandled pattern type #{pattern.type}"
-        end
-      end
-    end
 
     def verify_grammar(grammar)
       raise "Not a grammar!" unless grammar.type == GRAMMAR

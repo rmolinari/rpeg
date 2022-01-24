@@ -998,7 +998,7 @@ class TestsFromLpegCode < Test::Unit::TestCase
   end
 
   # All 1-byte character codes in a string
-  def allchars; @allchars ||= (0..255).map(&:chr).join; end
+  def allchars; @all_chars ||= m::FULL_CHAR_SET.join; end
 
   def digit; m.S("0123456789"); end
   def upper; m.S("ABCDEFGHIJKLMNOPQRSTUVWXYZ"); end
