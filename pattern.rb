@@ -603,9 +603,9 @@ class Pattern
     Analysis.has_captures?(self)
   end
 
-  def first_set(follow_set = FULL_CHAR_SET)
-    Analysis.first_set(self, follow_set)
-  end
+  # def first_set(follow_set = FULL_CHAR_SET)
+  #   Analysis.first_set(self, follow_set)
+  # end
 
   # From checkloops in lptree.c
   #
@@ -623,6 +623,93 @@ class Pattern
       child.loops?
     when 2
       left.loops? || right.loops?
+    end
+  end
+
+  # LPEG's getfirst
+  #
+  # static int getfirst (TTree *tree, const Charset *follow, Charset *firstset) {
+  #
+  # /*
+  # ** Computes the 'first set' of a pattern.
+  # ** The result is a conservative aproximation:
+  # **   match p ax -> x (for some x) ==> a belongs to first(p)
+  # ** or
+  # **   a not in first(p) ==> match p ax -> fail (for all x)
+  # [So we want to know the set of characters that can make the pattern succeed, at least on the first characters]
+  # **
+  # ** The set 'follow' is the first set of what follows the
+  # ** pattern (full set if nothing follows it).
+  # **
+  # ** The function returns 0 when this resulting set can be used for
+  # ** test instructions that avoid the pattern altogether.
+  # ** A non-zero return can happen for two reasons:
+  # ** 1) match p '' -> ''            ==> return has bit 1 set
+  # ** (tests cannot be used because they would always fail for an empty input);
+  # ** 2) there is a match-time capture ==> return has bit 2 set
+  # ** (optimizations should not bypass match-time captures).
+  # */
+  #
+  # I don't really understand what is going on here. I'm hoping it will make more sense as I port it. I think we pass in follow
+  # and return the int and firstset.
+  def first_set(follow_set = FULL_CHAR_SET)
+    case type
+    when CHAR, CHARSET, ANY
+      [0, charset]
+    when NTRUE
+      [1, follow_set.clone] # /* accepts the empty string */
+    when NFALSE
+      [0, Set.new]
+    when ORDERED_CHOICE
+      e1, first1 = left.first_set(follow_set)
+      e2, first2 = right.first_set(follow_set)
+      [e1 | e2, first1 | first2]
+    when SEQ
+      if !left.nullable?
+        # /* when p1 is not nullable, p2 has nothing to contribute;
+        #  return getfirst(sib1(tree), fullset, firstset); */
+        left.first_set(FULL_CHAR_SET)
+      else
+        e2, first2 = right.first_set(follow_set)
+        e1, first1 = left.first_set(first2)
+        return [0, first1] if e1.zero? # /* 'e1' ensures that first can be used */
+        return [2, first1] if (e1 | e2) & 2 == 2 # /* one of the children has a matchtime? */
+
+        [e2, first1] # /* else depends on 'e2' */
+      end
+    when REPEATED
+      _, first_cs = child.first_set(follow_set)
+      [1, first_cs] # /* accept the empty string */
+    when CAPTURE, RULE
+      child.first_set(follow_set)
+    when GRAMMAR
+      child.first.first_set(follow_set)
+    when RUNTIME
+      # NOTE: I don't understand this
+      #
+      # /* function invalidates any follow info. */
+      e, first_set = child.first_set(FULL_CHAR_SET)
+      if e.positive?
+        [2, first_set] # /* function is not "protected"? */
+      else
+        [0, first_set] # /* pattern inside capture ensures first can be used */
+      end
+    when CALL
+      child.first_set(follow_set)
+    when AND
+      e, first_set = child.first_set(follow_set)
+      [e, first_set & follow_set]
+    when NOT, BEHIND
+      if type == NOT && child.charsetlike?
+        [1, FULL_CHAR_SET - child.charset]
+      else
+        # /* instruction gives no new information */
+        # /* call 'getfirst' only to check for math-time captures */
+        e, = child.first_set(follow_set)
+        [e | 1, follow_set] # /* always can accept the empty string */
+      end
+    else
+      raise "Unhandled node type #{type}"
     end
   end
 
@@ -1399,93 +1486,6 @@ class Pattern
         right_len == left_len ? right_len : nil
       else
         raise "Unhandled node type #{node.type}"
-      end
-    end
-
-    # LPEG's getfirst
-    #
-    # static int getfirst (TTree *tree, const Charset *follow, Charset *firstset) {
-    #
-    # /*
-    # ** Computes the 'first set' of a pattern.
-    # ** The result is a conservative aproximation:
-    # **   match p ax -> x (for some x) ==> a belongs to first(p)
-    # ** or
-    # **   a not in first(p) ==> match p ax -> fail (for all x)
-    # [So we want to know the set of characters that can make the pattern succeed, at least on the first characters]
-    # **
-    # ** The set 'follow' is the first set of what follows the
-    # ** pattern (full set if nothing follows it).
-    # **
-    # ** The function returns 0 when this resulting set can be used for
-    # ** test instructions that avoid the pattern altogether.
-    # ** A non-zero return can happen for two reasons:
-    # ** 1) match p '' -> ''            ==> return has bit 1 set
-    # ** (tests cannot be used because they would always fail for an empty input);
-    # ** 2) there is a match-time capture ==> return has bit 2 set
-    # ** (optimizations should not bypass match-time captures).
-    # */
-    #
-    # I don't really understand what is going on here. I'm hoping it will make more sense as I port it. I think we pass in follow
-    # and return the int and firstset.
-    def first_set(pattern, follow_set)
-      case pattern.type
-      when CHAR, CHARSET, ANY
-        [0, pattern.charset]
-      when NTRUE
-        [1, follow_set.clone] # /* accepts the empty string */
-      when NFALSE
-        [0, Set.new]
-      when ORDERED_CHOICE
-        e1, first1 = first_set(pattern.left, follow_set)
-        e2, first2 = first_set(pattern.right, follow_set)
-        [e1 | e2, first1 | first2]
-      when SEQ
-        if !pattern.left.nullable?
-          # /* when p1 is not nullable, p2 has nothing to contribute;
-          #  return getfirst(sib1(tree), fullset, firstset); */
-          first_set(pattern.left, FULL_CHAR_SET)
-        else
-          e2, first2 = first_set(pattern.right, follow_set)
-          e1, first1 = first_set(pattern.left, first2)
-          return [0, first1] if e1.zero? # /* 'e1' ensures that first can be used */
-          return [2, first1] if (e1 | e2) & 2 == 2 # /* one of the children has a matchtime? */
-
-          [e2, first1] # /* else depends on 'e2' */
-        end
-      when REPEATED
-        _, first_cs = first_set(pattern.child, follow_set)
-        [1, first_cs] # /* accept the empty string */
-      when CAPTURE, RULE
-        first_set(pattern.child, follow_set)
-      when GRAMMAR
-        first_set(pattern.child.first, follow_set)
-      when RUNTIME
-        # NOTE: I don't understand this
-        #
-        # /* function invalidates any follow info. */
-        e, first_set = first_set(pattern.child, FULL_CHAR_SET)
-        if e.positive?
-          [2, first_set] # /* function is not "protected"? */
-        else
-          [0, first_set] # /* pattern inside capture ensures first can be used */
-        end
-      when CALL
-        first_set(pattern.child, follow_set)
-      when AND
-        e, first_set = first_set(pattern.child, follow_set)
-        [e, first_set & follow_set]
-      when NOT, BEHIND
-        if pattern.type == NOT && pattern.child.charsetlike?
-          [1, FULL_CHAR_SET - pattern.child.charset]
-        else
-          # /* instruction gives no new information */
-          # /* call 'getfirst' only to check for math-time captures */
-          e, = first_set(pattern.child, follow_set)
-          [e | 1, follow_set] # /* always can accept the empty string */
-        end
-      else
-        raise "Unhandled node type #{pattern.type}"
       end
     end
   end
