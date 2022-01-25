@@ -959,6 +959,19 @@ class TestsFromLpegCode < Test::Unit::TestCase
 
     rev = RE.compile(" R <- (!.) -> '' / ({.} R) -> '%2%1' ")
     assert_equal "9876543210", rev.match("0123456789")
+
+    # -- testing groups
+    assert_equal ["a", "bc", "b", "c", "c", ""], RE.match("abc", "{:S <- {:.:} {S} / '':}")
+
+    assert_equal ({ "a" => "1", "b" => "2", "c" => "4" }), RE.match("1234", "{| {:a:.:} {:b:.:} {:c:.{.}:} |}")
+    assert_equal ({ "a" => "1", "b" => "2", "c" => "4" }), RE.match("1234", "{|{:a:.:} {:b:{.}{.}:} {:c:{.}:}|}")
+
+    # TODO: test this once the table capture format is settled
+    # t = re.match("12345", "{| {:.:} {:b:{.}{.}:} {:{.}{.}:} |}")
+    # checkeq(t, {"1", b="2", "4", "5"})
+
+    assert_equal %w[1 23 4 5], RE.match("12345", "{| {:.:} {:{:b:{.}{.}:}:} {:{.}{.}:} |}")
+    assert_equal %w[1 23 4 5], RE.match("12345", "{| {:.:} {{:b:{.}{.}:}} {:{.}{.}:} |}")
   end
 
   # For isolating a failing test. Run with the -n flag to ruby.

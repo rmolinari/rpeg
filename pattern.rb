@@ -347,6 +347,7 @@ class Pattern
   # init: the string index to start at, defaulting to 0
   # extra_args: used by Argument Captures
   def match(str, init = 0, *extra_args)
+    # Note that the program doesn't depend on the arguments so we can cache it
     @program ||= optimize_jumps(code(follow_set: FULL_CHAR_SET) + [Instruction.new(Instruction::OP_END)])
 
     machine = ParsingMachine.new(@program, str, init, extra_args)
@@ -908,9 +909,9 @@ class Pattern
   # dominating_test
   # - a TEST_CHAR, TEST_CHARSET, or TEST_ANY instruction that we can assume has succeeded and which might save us a little time
   # - see the tt argument sprinkled through the functions in LPEG's lpcode.c
+  #
+  # NOTE: don't cache the results as we did before, because it depends on the arguments
   def code(follow_set: FULL_CHAR_SET, dominating_test: nil)
-    return @code if @code
-
     code = []
     case type
     when CHARSET
@@ -1046,6 +1047,7 @@ class Pattern
       code << Instruction.new(i::CLOSE_RUN_TIME, aux: { kind: Capture::CLOSE })
     when RULE
       code = child.code(follow_set:)
+      code[0] = code.first.clone
       code.first.dec = data # decorate with the nonterminal, but clone first to avoid unexpected mutations
     when GRAMMAR
       start_line_of_nonterminal = {}
@@ -1092,7 +1094,7 @@ class Pattern
       raise "Unhandled pattern type #{type}"
     end
 
-    @code = code
+    code
   end
 
   # LPEG's codetestset (lpcode.c)
