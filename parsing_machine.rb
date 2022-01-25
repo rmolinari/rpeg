@@ -51,7 +51,7 @@ class Instruction
     when BEHIND
       str << "  #{aux}"
     when CHARSET, SPAN, TEST_CHARSET
-      str << "  #{data.to_a.join.dump}"
+      str << "  #{charset_rep(data)}"
     when JUMP, CHOICE, CALL, COMMIT, BACK_COMMIT, PARTIAL_COMMIT
       str << "  #{offset}"
     when RETURN, OP_END, FAIL, FAIL_TWICE, UNREACHABLE, ANY, TEST_ANY
@@ -62,6 +62,47 @@ class Instruction
       raise "Unhandled op_code #{op_code} in Instruction#to_s"
     end
     @to_s = str
+  end
+
+  # A shorter representation of a charset
+  private def charset_rep(char_set)
+    return "" if char_set.empty?
+
+    bools = []
+    char_set.each do |ch|
+      bools[ch.ord] = true
+    end
+
+    # attach an artificial false bool to trigger ship-out
+    bools << false
+
+    parts = []
+
+    open = false
+    first = last = nil
+    bools.each_with_index do |present, idx|
+      if present
+        if open
+          last = idx
+        else
+          # start a new range
+          first = idx
+          last = idx
+          open = true
+        end
+      elsif open
+        # a subrange just closed
+        if last == first
+          parts << first.chr(Encoding::UTF_8).dump
+        else
+          parts << (first.chr(Encoding::UTF_8) + ".." + last.chr(Encoding::UTF_8)).dump
+        end
+        first = last = nil
+        open = false
+      end
+    end
+
+    parts.join(", ")
   end
 end
 

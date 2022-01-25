@@ -1109,7 +1109,7 @@ class Pattern
   # first_set is the set of first-chars that we want to match on.
   # Offset is where to jump to if we don't match one of them.
   #
-  # If offset is not given we don't set it: client code is responsible for that.
+  # If offset is not given we don't mind: client code is responsible for that.
   def testset_code(first_set, offset = nil)
     case first_set.size
     when 0
