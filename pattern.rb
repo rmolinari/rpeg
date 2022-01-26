@@ -818,7 +818,7 @@ class Pattern
       end
     when REPEATED
       _, first_cs = child.first_set(follow_set)
-      [1, first_cs] # /* accept the empty string */
+      [1, first_cs | follow_set] # /* accept the empty string */
     when CAPTURE, RULE
       child.first_set(follow_set)
     when GRAMMAR
