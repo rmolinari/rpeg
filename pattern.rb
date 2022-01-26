@@ -923,7 +923,12 @@ class Pattern
     when SEQ
       # See LPEG's codeseq1 (lpcode.c) for the handling of the dominating test (if any)
       # TODO: LPEG's optimization useing needfollow
-      code = left.code(dominating_test:)
+      if left.need_follow?
+        _, follow_set1 = right.first_set(follow_set)
+        code = left.code(follow_set: follow_set1, dominating_test:)
+      else
+        code = left.code(dominating_test:)
+      end
       if left.fixed_len != 0
         # /* can 'p1' consume anything? */
         dominating_test = nil # /* invalidate test */
@@ -1179,6 +1184,29 @@ class Pattern
           program[idx].offset = final_t - idx
         end
       end
+    end
+  end
+
+
+  # LPEG's needfollow (lpcode.c)
+  #
+  # /*
+  # ** Check whether the code generation for the given tree can benefit
+  # ** from a follow set (to avoid computing the follow set when it is
+  # ** not needed)
+  # */
+  def need_follow?
+    case type
+    when CHAR, CHARSET, ANY, NFALSE, NTRUE, AND, NOT, RUNTIME, GRAMMAR, CALL, BEHIND
+      false
+    when ORDERED_CHOICE, REPEATED
+      true
+    when CAPTURE
+      child.need_follow?
+    when SEQ
+      right.need_follow?
+    else
+      raise "Unhandled case #{type} in need_follow?"
     end
   end
 

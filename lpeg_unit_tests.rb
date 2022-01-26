@@ -272,7 +272,6 @@ class TestsFromLpegCode < Test::Unit::TestCase
     assert_equal %w[123 d], m.match(m.C(digit**1 * m.Cc("d")) + m.C(letter**1 * m.Cc("l")), "123")
     assert_equal %w[abcd l], m.match(m.C(digit**1 * m.Cc("d")) + m.C(letter**1 * m.Cc("l")), "abcd")
 
-    # $do_it = true
     assert_equal ["abc", "a", "bc", "b", "c", "c", ""], m.match([m.C(m.C(1) * m.V(0) + -1)], "abc")
 
     # -- bug in 0.12 ('hascapture' did not check for captures inside a rule)
