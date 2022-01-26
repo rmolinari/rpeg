@@ -64,6 +64,10 @@ module Capture
       (0..).lazy.map { |key| @data[key] }.take_while { |v| !v.nil? }.force
     end
 
+    def each
+      @data.each
+    end
+
     # Note that we say false if all keys are positive integers but 0 has no value (and so #unpack returns [])
     def empty?
       size.zero?

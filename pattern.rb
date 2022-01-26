@@ -289,17 +289,20 @@ class Pattern
     #   table in successive integer keys, starting at 1. Moreover, for each named capture group created by patt, the first value of
     #   the group is put into the table with the group name as its key. The captured value is only the table.
     #
-    # For us the capture takes the form of a custom class, TableCapture
+    # For us the capture takes the form of a custom class, TableCapture. It is intended to mimic a little bit of the functionality
+    # of Lua's tables, which are a combination Array/Hashtable
+    # - indexing is by 0, 1, 2, ... for the anonmyous catpures
+    # - indexing by group names otherwise
+    # - #unpack gives an arry of the anonymous captures.
     #
-    # For us, if there are no named group captures we return an array with the anonymous captures. Otherwise we return a hash with
-    # integer keys 0, 1, 2, ... for the anonymous captures and the group names as keys for the others.
+    # See the class definition (captures.rb) for more details.
     #
-    # So, the anonymous captures are available in the result, r, as r[0], r[1], ..., and the named captures as r[name].
-    #
-    # "Table" is a Lua term and is a like a hashtable crossed with an array.
-    #
-    # TODO: rethink how we return the values. Perhaps a hash with group captures keyed as described and a separate :anon key giving
-    # the array of anonymous captures.
+    # Other things tried:
+    # - returning a hash when there are named captures and an array when there are not
+    #   - in the hash, anonmyous captures are at keys 0, 1, 2, ...
+    #   - this turned out to be somewhat frustrating in unit tests.
+    # - returning a hash with group names as keys and a special key of :anon for the array of anonmyous captures
+    #   - I thought this would work better, but actually turned out to be much worse to work with
     def Ct(patt)
       Pattern.new(CAPTURE, P(patt), capture: Capture::TABLE)
     end
