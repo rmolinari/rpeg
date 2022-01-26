@@ -45,24 +45,23 @@ module Capture
     end
   end
 
-  # The result of a table capture. The idea is to mimic a little bit of the functionality of a Lua table
+  # The result of a table capture. The idea is to mimic a little bit of the functionality of a Lua table which is like a combination
+  # Array/Hash.
   #
-  # Internally, we have a hash. Indexing can be by (hash) key or (array) index. Getting and setting is
-  # supported.
+  # Internally, we have a hash. Indexing can be by (hash) key or (array) index. Getting and setting is supported.
   #
   # The initial, contiguous segment of the array part (non nil values at 0, 1, 2, ..., k) is available from #unpack.
-  #
   class TableCapture
     def initialize(hash_part, array_part)
-      @hash_part = hash_part.clone
+      @data = hash_part.clone
       array_part.each_with_index do |val, idx|
-        @hash_part[idx] = val
+        @data[idx] = val
       end
     end
 
     # Let i be the smallest natural number such that self[i].nil?. We return [self[0], self[1], ..., self[i-1]]
     def unpack
-      (0..).lazy.map { |key| @hash_part[key] }.take_while { |v| !v.nil? }.force
+      (0..).lazy.map { |key| @data[key] }.take_while { |v| !v.nil? }.force
     end
 
     # Note that we say false if all keys are positive integers but 0 has no value (and so #unpack returns [])
@@ -71,29 +70,33 @@ module Capture
     end
 
     def size
-      @hash_part.size
+      @data.size
     end
 
     def [](key)
-      @hash_part[key]
+      @data[key]
     end
 
     def []=(key, value)
-      @hash_part[key] = value
+      @data[key] = value
+    end
+
+    def delete(key)
+      @data.delete(key)
     end
 
     # We support comparison with
-    # - TableCapture, in which case the hash and array parts must agree
-    # - Hash, in which case we check key-by-key with self
+    # - TableCapture, in which case we just compare the data objects
+    # - Hash, in which case we check key-by-key
     # - Array, in which case we check index-by-index
     def ==(other)
       case other
       when TableCapture
-        @hash_part == other.instance_variable_get(:@hash_part)
+        @data == other.instance_variable_get(:@data)
       when Hash
-        @hash_part == other
+        @data == other
       when Array
-        @hash_part == other.each_with_index.to_a.map(&:reverse).to_h
+        @data == other.each_with_index.to_a.map(&:reverse).to_h
       else
         raise "Bad type #{other.class} for =="
       end

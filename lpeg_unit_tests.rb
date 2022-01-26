@@ -964,29 +964,29 @@ class TestsFromLpegCode < Test::Unit::TestCase
     assert_equal 0, RE.find("", "!.").first
     assert_equal 3, RE.find("alo", "!.").first
 
-    # TODO: make this work.
-    #
-    # Problem: Lua's table is a Hashtable/array mashup. In particular, t.tag = foo adds apparently foo to the table without a key
-    # when tag is nill, sort of like appending to an array. But the way we represent table captures in RPEG is messy and should be
-    # rethought. It's constructions like this that suggest we should always return a hash, with a special key :anon for the array of
-    # anonymous captures.
-    #
-    # addtag = lambda do |s, i, t, tag = nil|
-    #   # This is a problem due to how we return 'table' captures. Ugh.
-    #   t[:tag] = tag
-    #   [i, t]
-    # end
+    addtag = lambda do |s, i, t, tag = nil|
+      # in lua, setting a key's value to nil deletes it from the table
+      if tag.nil?
+        t.delete(tag)
+      else
+        t[:tag] = tag
+      end
+      [i, t]
+    end
 
-    # grammer = <<~GRAM
-    #   doc <- block !.
-    #   block <- (start {| (block / { [^<]+ })* |} end?) => addtag
-    #   start <- '<' {:tag: [a-z]+ :} '>'
-    #   end <- '</' { =tag } '>'
-    # GRAM
+    grammer = <<~GRAM
+      doc <- block !.
+      block <- (start {| (block / { [^<]+ })* |} end?) => addtag
+      start <- '<' {:tag: [a-z]+ :} '>'
+      end <- '</' { =tag } '>'
+    GRAM
 
-    # c = RE.compile(grammer, { addtag: })
-    # x = c.match('<x>hi<b>hello</b>but<b>totheend</x>')
-    # assert_equal ({ tag: 'x', 0 => 'hi', 1 => { tag: 'b', 0 => 'hello' }, 2 => 'but', 3 => ['totheend'] }), x
+    c = RE.compile(grammer, { addtag: addtag })
+    x = c.match('<x>hi<b>hello</b>but<b>totheend</x>')
+    assert_equal tcapture.new(
+                   { tag: 'x' },
+                   ['hi', { tag: 'b', 0 => 'hello' }, 'but', ['totheend']]
+                 ), x
 
     # -- test for folding captures
     grammar = <<~GRAM
@@ -1053,9 +1053,8 @@ class TestsFromLpegCode < Test::Unit::TestCase
     assert_equal ({ "a" => "1", "b" => "2", "c" => "4" }), RE.match("1234", "{| {:a:.:} {:b:.:} {:c:.{.}:} |}")
     assert_equal ({ "a" => "1", "b" => "2", "c" => "4" }), RE.match("1234", "{|{:a:.:} {:b:{.}{.}:} {:c:{.}:}|}")
 
-    # TODO: test this once the table capture format is settled
-    # t = re.match("12345", "{| {:.:} {:b:{.}{.}:} {:{.}{.}:} |}")
-    # checkeq(t, {"1", b="2", "4", "5"})
+    t = RE.match("12345", "{| {:.:} {:b:{.}{.}:} {:{.}{.}:} |}")
+    assert_equal tcapture.new({ "b" => "2"}, %w[1 4 5]), t
 
     assert_equal %w[1 23 4 5], RE.match("12345", "{| {:.:} {:{:b:{.}{.}:}:} {:{.}{.}:} |}")
     assert_equal %w[1 23 4 5], RE.match("12345", "{| {:.:} {{:b:{.}{.}:}} {:{.}{.}:} |}")
@@ -1071,6 +1070,11 @@ class TestsFromLpegCode < Test::Unit::TestCase
   # Helpers to make it easier to use the tests copied from the Lua code
   def m
     Pattern
+  end
+
+  # shorthand
+  def tcapture
+    Capture::TableCapture
   end
 
   # If pattern is a lambda call it; otherwise just use it
