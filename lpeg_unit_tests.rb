@@ -473,26 +473,27 @@ class TestsFromLpegCode < Test::Unit::TestCase
 
     t, n = m.match(m.Ct(m.C(letter)**1) * m.Cc("t"), "alo")
     assert_equal "t", n
-    assert_equal "alo", t.join
+    assert_equal "alo", t.unpack.join
 
     t = m.match(m.Ct(m.C(m.C(letter)**1)), "alo")
-    assert_equal "alo;a;l;o", t.join(";")
+    assert_equal "alo;a;l;o", t.unpack.join(";")
 
     t = m.match(m.Ct(m.C(m.C(letter)**1)), "alo")
-    assert_equal "alo;a;l;o", t.join(";")
+    assert_equal "alo;a;l;o", t.unpack.join(";")
 
     t = m.match(m.Ct(m.Ct((m.Cp() * letter * m.Cp())**1)), "alo")
-    assert_equal "0;1;1;2;2;3", t[0].join(";")
+    assert_equal "0;1;1;2;2;3", t[0].unpack.join(";")
 
     assert_equal %w[alo a o], m.match(m.Ct(m.C(m.C(1) * 1 * m.C(1))), "alo")
 
     p = m.Ct(m.Cg(m.Cc(10), "hi") * m.C(1)**0 * m.Cg(m.Cc(20), "ho"))
-    assert_equal ({"hi" => 10, "ho" => 20}), p.match('')
-    assert_equal ({"hi" => 10, "ho" => 20, 0 => 'a', 1 => 'b', 2 => 'c'}), p.match('abc')
+    assert_equal ({ "hi" => 10, "ho" => 20 }), p.match('')
+
+    assert_equal ( {"hi" => 10, "ho" => 20, 0 => 'a', 1 => 'b', 2 => 'c'} ), p.match('abc')
 
     # -- non-string group names
     p = m.Ct(m.Cg(1, a_lambda) * m.Cg(1, 23.5) * m.Cg(1, Kernel))
-    assert_equal ({ a_lambda => 'a', 23.5 => 'b', Kernel => 'c'}), p.match('abcdefghij')
+    assert_equal ( { a_lambda => 'a', 23.5 => 'b', Kernel => 'c'} ), p.match('abcdefghij')
 
     # -- a large table capture
     #
@@ -500,8 +501,8 @@ class TestsFromLpegCode < Test::Unit::TestCase
     # big = 10_000 # Note: this is slow! About 800 ms
     t = m.match(m.Ct(m.C('a')**0), "a" * big)
     assert_equal big, t.size
-    assert_equal 'a', t.first
-    assert_equal 'a', t.last
+    assert_equal 'a', t.unpack.first
+    assert_equal 'a', t.unpack.last
 
     p = m.Cg(m.C(1) * m.C(1), "k") * m.Ct(m.Cb("k"))
     t = p.match("ab")
@@ -877,6 +878,7 @@ class TestsFromLpegCode < Test::Unit::TestCase
     assert_equal 18, RE.match("01234567890123456789", "[0-9]^3+")
 
     assert_equal "4560123", RE.match("01234567890123456789", "({....}{...}) -> '%2%1'")
+
     assert_equal %w[0 1 2 3 4 5 6 7 8 9], RE.match("0123456789", "{| {.}* |}")
     assert_equal "0101", RE.match("012345", "{| (..) -> '%0%0' |}")[0]
 

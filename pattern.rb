@@ -289,6 +289,8 @@ class Pattern
     #   table in successive integer keys, starting at 1. Moreover, for each named capture group created by patt, the first value of
     #   the group is put into the table with the group name as its key. The captured value is only the table.
     #
+    # For us the capture takes the form of a custom class, TableCapture
+    #
     # For us, if there are no named group captures we return an array with the anonymous captures. Otherwise we return a hash with
     # integer keys 0, 1, 2, ... for the anonymous captures and the group names as keys for the others.
     #

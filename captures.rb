@@ -44,6 +44,83 @@ module Capture
       "Breadcrumb size:#{size} sub_idx:#{subject_index} data:#{data.inspect} kind:#{kind}"
     end
   end
+
+  # The result of a table capture. The idea is to mimic a little bit of the functionality of a Lua table
+  #
+  # Internally, we have a hash. Indexing can be by (hash) key or (array) index. Getting and setting is
+  # supported.
+  #
+  # The initial, contiguous segment of the array part (non nil values at 0, 1, 2, ..., k) is available from #unpack.
+  #
+  class TableCapture
+    def initialize(hash_part, array_part)
+      @hash_part = hash_part.clone
+      array_part.each_with_index do |val, idx|
+        @hash_part[idx] = val
+      end
+    end
+
+    # Let i be the smallest natural number such that self[i].nil?. We return [self[0], self[1], ..., self[i-1]]
+    def unpack
+      (0..).lazy.map { |key| @hash_part[key] }.take_while { |v| !v.nil? }.force
+    end
+
+    # Note that we say false if all keys are positive integers but 0 has no value (and so #unpack returns [])
+    def empty?
+      size.zero?
+    end
+
+    def size
+      @hash_part.size
+    end
+
+    def [](key)
+      @hash_part[key]
+    end
+
+    def []=(key, value)
+      @hash_part[key] = value
+    end
+
+    # We support comparison with
+    # - TableCapture, in which case the hash and array parts must agree
+    # - Hash, in which case we check key-by-key with self
+    # - Array, in which case we check index-by-index
+    def ==(other)
+      case other
+      when TableCapture
+        @hash_part == other.instance_variable_get(:@hash_part)
+      when Hash
+        @hash_part == other
+      when Array
+        @hash_part == other.each_with_index.to_a.map(&:reverse).to_h
+      else
+        raise "Bad type #{other.class} for =="
+      end
+    end
+
+    # Very annoyingly, Ruby's #coerce mechanism is only used by the Numeric types. This means we can make convenient checks like
+    # table_capture == {} but not {} == table_capture. The only approach I can think of is to monkeypatch Array and Hash.
+    #
+    # Maybe we shouldn't bother, and just cobble something together for these tests in contexts like unit test classes. It would be
+    # nice to define a refinement and use it in a unit test file, but then, for example, assertion functions won't see the
+    # refinement as they are defined elsewhere.
+
+    # Technique from https://stackoverflow.com/a/61438012/1299011
+    module ArrayHashOverloadExtension
+      def ==(other)
+        return (other == self) if other.is_a?(TableCapture)
+
+        super
+      end
+    end
+
+    [::Hash, ::Array].each do |klass|
+      klass.class_eval do
+        prepend ArrayHashOverloadExtension
+      end
+    end
+  end
 end
 
 # q.v. struct StrAux in lpcap.c
@@ -240,6 +317,8 @@ class CaptureState
   #   - At first I always returned a Hash, with numeric keys 0, 1, 2, ... for the anonymous captures and name keys for the
   #     others. But this felt clunky, especially when we want to, say, join the anonymous arguments into a string.
   #   - Maybe we should return a hash with an :anonymous key giving the array of anonymous captures, or something like that.
+  #
+  # Experimental: return a TableCapture instance
   def push_table_capture
     if current_breadcrumb.full?
       # Empty table
@@ -271,14 +350,7 @@ class CaptureState
     end
     advance # skip the close entry
 
-    if named_results.empty?
-      push indexed_results
-    else
-      indexed_results.each_with_index do |v, i|
-        named_results[i] = v
-      end
-      push named_results.merge
-    end
+    push Capture::TableCapture.new(named_results, indexed_results)
     1
   end
 
