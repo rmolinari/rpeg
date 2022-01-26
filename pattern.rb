@@ -295,6 +295,9 @@ class Pattern
     # So, the anonymous captures are available in the result, r, as r[0], r[1], ..., and the named captures as r[name].
     #
     # "Table" is a Lua term and is a like a hashtable crossed with an array.
+    #
+    # TODO: rethink how we return the values. Perhaps a hash with group captures keyed as described and a separate :anon key giving
+    # the array of anonymous captures.
     def Ct(patt)
       Pattern.new(CAPTURE, P(patt), capture: Capture::TABLE)
     end

@@ -72,6 +72,27 @@ class TestsFromLpegCode < Test::Unit::TestCase
     assert_equal "a..a.", m.match(m.Cs((-((-m.P("a"))/"") * 1 + m.P(1)/".")**0), "aloal")
   end
 
+  def test_coercion
+    # -- tests for non-pattern as arguments to pattern functions
+
+    p = [ ('a' * m.V(0))**-1 ] * m.P('b') * [ 'a' * m.V(1), m.V(0)**-1 ]
+    assert_equal 6, m.match(p, "aaabaac")
+
+    p = m.P('abc') * 2 * -5 * true * 'de'  # -- mix of numbers and strings and booleans
+    assert_equal 7, p.match("abc01de")
+    assert_nil p.match("abc01de3456")
+
+    p = 'abc' * (2 * (-5 * (true * m.P('de'))))
+
+    assert_equal 7, p.match("abc01de")
+    assert_nil p.match("abc01de3456")
+
+    p = [m.V(1), m.P("abc")] *
+        (m.P({ initial: "xx", xx: m.P("xx") }) + { initial: "x", x: m.P("a") * m.V("x") + "" })
+    assert_equal 6, p.match("abcaaaxx")
+    assert_equal 5, p.match("abcxx")
+  end
+
   def test_look_behind
     # -- look-behind predicate
     assert_nil m.match(m.B('a'), 'a')
@@ -200,6 +221,61 @@ class TestsFromLpegCode < Test::Unit::TestCase
     bad_grammar.call([('a' + m.P('bcd'))**-1 * m.V(0)])
   end
 
+  def test_optimizations
+    # -- test for alternation optimization
+    assert_equal 1, m.match(m.P("a")**1 + "ab" + m.P("x")**0, "ab")
+    assert_equal 2, m.match((m.P("a")**1 + "ab" + m.P("x")**0 * 1)**0, "ab")
+    assert_equal 0, m.match(m.P("ab") + "cd" + "" + "cy" + "ak", "98")
+    assert_equal 2, m.match(m.P("ab") + "cd" + "ax" + "cy", "ax")
+    assert_equal 2, m.match("a" * m.P("b")**0 * "c"  + "cd" + "ax" + "cy", "ax")
+    assert_equal 2, m.match((m.P("ab") + "cd" + "ax" + "cy")**0, "ax")
+    assert_equal 2, m.match(m.P(1) * "x" + m.S("") * "xu" + "ay", "ay")
+    assert_equal 3, m.match(m.P("abc") + "cde" + "aka", "aka")
+    assert_equal 2, m.match(m.S("abc") * "x" + "cde" + "aka", "ax")
+    assert_equal 3, m.match(m.S("abc") * "x" + "cde" + "aka", "aka")
+    assert_equal 3, m.match(m.S("abc") * "x" + "cde" + "aka", "cde")
+    assert_equal 3, m.match(m.S("abc") * "x" + "ide" + m.S("ab") * "ka", "aka")
+    assert_equal 2, m.match("ab" + m.S("abc") * m.P("y")**0 * "x" + "cde" + "aka", "ax")
+    assert_equal 3, m.match("ab" + m.S("abc") * m.P("y")**0 * "x" + "cde" + "aka", "aka")
+    assert_equal 3, m.match("ab" + m.S("abc") * m.P("y")**0 * "x" + "cde" + "aka", "cde")
+    assert_equal 3, m.match("ab" + m.S("abc") * m.P("y")**0 * "x" + "ide" + m.S("ab") * "ka", "aka")
+    assert_equal 2, m.match("ab" + m.S("abc") * m.P("y")**0 * "x" + "ide" + m.S("ab") * "ka", "ax")
+    assert_equal 3, m.match(m.P(1) * "x" + "cde" + m.S("ab") * "ka", "aka")
+    assert_equal 3, m.match(m.P(1) * "x" + "cde" + m.P(1) * "ka", "aka")
+    assert_equal 3, m.match(m.P(1) * "x" + "cde" + m.P(1) * "ka", "cde")
+    assert_equal 2, m.match(m.P("eb") + "cd" + m.P("e")**0 + "x", "ee")
+    assert_equal 2, m.match(m.P("ab") + "cd" + m.P("e")**0 + "x", "abcd")
+    assert_equal 3, m.match(m.P("ab") + "cd" + m.P("e")**0 + "x", "eeex")
+    assert_equal 2, m.match(m.P("ab") + "cd" + m.P("e")**0 + "x", "cd")
+    assert_equal 0, m.match(m.P("ab") + "cd" + m.P("e")**0 + "x", "x")
+    assert_equal 0, m.match(m.P("ab") + "cd" + m.P("e")**0 + "x" + "", "zee")
+    assert_equal 2, m.match(m.P("ab") + "cd" + m.P("e")**1 + "x", "abcd")
+    assert_equal 3, m.match(m.P("ab") + "cd" + m.P("e")**1 + "x", "eeex")
+    assert_equal 2, m.match(m.P("ab") + "cd" + m.P("e")**1 + "x", "cd")
+    assert_equal 1, m.match(m.P("ab") + "cd" + m.P("e")**1 + "x", "x")
+    assert_equal 0, m.match(m.P("ab") + "cd" + m.P("e")**1 + "x" + "", "zee")
+    assert_nil m.match(("aa" * m.P("bc")**-1 + "aab") * "e", "aabe")
+
+    assert_equal 3, m.match("alo" * (m.P("\n") + -1), "alo")
+
+    # -- optimizations with optional parts
+    assert_equal 0, m.match(("ab" * -m.P("c"))**-1, "abc")
+    assert_equal 0, m.match(("ab" * +m.P("c"))**-1, "abd")
+    assert_equal 0, m.match(("ab" * m.B("c"))**-1, "ab")
+    assert_equal 6, m.match(("ab" * m.P("cd")**0)**-1, "abcdcdc")
+
+    assert_equal 2, m.match(m.P("ab")**-1 - "c", "abcd")
+
+    p = ('Aa' * ('Bb' * ('Cc' * m.P("Dd")**0)**0)**0)**-1
+    assert_equal 20, p.match("AaBbCcDdBbCcDdDdDdBb")
+
+    # -- Bug in peephole optimization of LPeg 0.12 (IJmp -> ICommit)
+    # -- the next grammar has an original sequence IJmp -> ICommit -> IJmp L1
+    # -- that is optimized to ICommit L1
+    p = m.P({ x: (m.P([m.P('abc')]) + 'ayz') * m.V('y'), y: m.P('x') })
+    assert(p.match('abcx') == 4 && p.match('ayzx') == 4 && p.match('abc').nil?)
+  end
+
   def test_const_capture
     # test.lua l.170
     # -- bug in LPeg 0.12  (nil value does not create a 'ktable')
@@ -256,16 +332,26 @@ class TestsFromLpegCode < Test::Unit::TestCase
     assert_equal a_lambda, m.match(m.Carg(1), 'a', 1, a_lambda)
     assert_equal [10, 20], m.match(m.Carg(1) * m.Carg(2), '', 0, 10, 20)
 
-    # assert(m.match(m.Cmt(m.Cg(m.Carg(3), "a") *
-    #                      m.Cmt(m.Cb("a"), function (s,i,x)
-    #                                         assert(s == "a" and i == 1);
-    #                                         return i, x+1
-    #                                       end) *
-    #                      m.Carg(2), function (s,i,a,b,c)
-    #                                   assert(s == "a" and i == 1 and c == nil);
-    # 				  return i, 2*a + 3*b
-    #                                 end) * "a",
-    #                "a", 1, false, 100, 1000) == 2*1001 + 3*100)
+    assert_equal(
+      2 * 1001 + 3 * 100,
+      m.match(
+        m.Cmt(
+          m.Cg(m.Carg(3), "a") *
+          m.Cmt(
+            m.Cb("a"),
+            lambda do |s, i, x|
+              assert(s == "a" && i == 0)
+              [i, x + 1]
+            end
+          ) * m.Carg(2),
+          lambda do |s, i, a, b, c = nil|
+            assert(s == "a" && i == 0 && c.nil?)
+            [i, 2 * a + 3 * b]
+          end
+        ) * "a",
+        "a", 0, false, 100, 1000
+      )
+    )
   end
 
   def test_simple_captures
@@ -359,9 +445,8 @@ class TestsFromLpegCode < Test::Unit::TestCase
     p = m.Cg(1) # -- no capture
     assert_equal 'x', p.match('x')
 
-    # TODO: comment out when we have /-captures
-    # p = m.Cg(m.P(true)/function () end * 1)   -- no value
-    # assert(p:match('x') == 'x')
+    p = m.Cg(m.P(true) / ->(*) {} * 1) # -- no value
+    assert_equal 'x', p.match('x')
 
     p = m.Cg(m.Cg(m.Cg(m.C(1))))
     assert_equal 'x', p.match('x')
@@ -879,9 +964,10 @@ class TestsFromLpegCode < Test::Unit::TestCase
 
     # TODO: make this work.
     #
-    # Problem: Lua's table is a Hashtable/array mashup. In particular, t[nil] = foo adds foo to the table without a key, sort of
-    # like appending to an array. But the we we return table captures from RPEG is messy and should be rethought. It's constructions
-    # like this that suggest we should always return a hash, with a special key :anon for the array of anonymous captures.
+    # Problem: Lua's table is a Hashtable/array mashup. In particular, t.tag = foo adds apparently foo to the table without a key
+    # when tag is nill, sort of like appending to an array. But the way we represent table captures in RPEG is messy and should be
+    # rethought. It's constructions like this that suggest we should always return a hash, with a special key :anon for the array of
+    # anonymous captures.
     #
     # addtag = lambda do |s, i, t, tag = nil|
     #   # This is a problem due to how we return 'table' captures. Ugh.

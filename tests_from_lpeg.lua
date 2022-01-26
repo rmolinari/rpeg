@@ -95,41 +95,6 @@ assert(m.match( basiclookfor((#m.P(b) * 1) * m.Cp()), "  (  (a)") == 7)
 
 
 
--- test for alternation optimization
-assert(m.match(m.P"a"^1 + "ab" + m.P"x"^0, "ab") == 2)
-assert(m.match((m.P"a"^1 + "ab" + m.P"x"^0 * 1)^0, "ab") == 3)
-assert(m.match(m.P"ab" + "cd" + "" + "cy" + "ak", "98") == 1)
-assert(m.match(m.P"ab" + "cd" + "ax" + "cy", "ax") == 3)
-assert(m.match("a" * m.P"b"^0 * "c"  + "cd" + "ax" + "cy", "ax") == 3)
-assert(m.match((m.P"ab" + "cd" + "ax" + "cy")^0, "ax") == 3)
-assert(m.match(m.P(1) * "x" + m.S"" * "xu" + "ay", "ay") == 3)
-assert(m.match(m.P"abc" + "cde" + "aka", "aka") == 4)
-assert(m.match(m.S"abc" * "x" + "cde" + "aka", "ax") == 3)
-assert(m.match(m.S"abc" * "x" + "cde" + "aka", "aka") == 4)
-assert(m.match(m.S"abc" * "x" + "cde" + "aka", "cde") == 4)
-assert(m.match(m.S"abc" * "x" + "ide" + m.S"ab" * "ka", "aka") == 4)
-assert(m.match("ab" + m.S"abc" * m.P"y"^0 * "x" + "cde" + "aka", "ax") == 3)
-assert(m.match("ab" + m.S"abc" * m.P"y"^0 * "x" + "cde" + "aka", "aka") == 4)
-assert(m.match("ab" + m.S"abc" * m.P"y"^0 * "x" + "cde" + "aka", "cde") == 4)
-assert(m.match("ab" + m.S"abc" * m.P"y"^0 * "x" + "ide" + m.S"ab" * "ka", "aka") == 4)
-assert(m.match("ab" + m.S"abc" * m.P"y"^0 * "x" + "ide" + m.S"ab" * "ka", "ax") == 3)
-assert(m.match(m.P(1) * "x" + "cde" + m.S"ab" * "ka", "aka") == 4)
-assert(m.match(m.P(1) * "x" + "cde" + m.P(1) * "ka", "aka") == 4)
-assert(m.match(m.P(1) * "x" + "cde" + m.P(1) * "ka", "cde") == 4)
-assert(m.match(m.P"eb" + "cd" + m.P"e"^0 + "x", "ee") == 3)
-assert(m.match(m.P"ab" + "cd" + m.P"e"^0 + "x", "abcd") == 3)
-assert(m.match(m.P"ab" + "cd" + m.P"e"^0 + "x", "eeex") == 4)
-assert(m.match(m.P"ab" + "cd" + m.P"e"^0 + "x", "cd") == 3)
-assert(m.match(m.P"ab" + "cd" + m.P"e"^0 + "x", "x") == 1)
-assert(m.match(m.P"ab" + "cd" + m.P"e"^0 + "x" + "", "zee") == 1)
-assert(m.match(m.P"ab" + "cd" + m.P"e"^1 + "x", "abcd") == 3)
-assert(m.match(m.P"ab" + "cd" + m.P"e"^1 + "x", "eeex") == 4)
-assert(m.match(m.P"ab" + "cd" + m.P"e"^1 + "x", "cd") == 3)
-assert(m.match(m.P"ab" + "cd" + m.P"e"^1 + "x", "x") == 2)
-assert(m.match(m.P"ab" + "cd" + m.P"e"^1 + "x" + "", "zee") == 1)
-assert(not m.match(("aa" * m.P"bc"^-1 + "aab") * "e", "aabe"))
-
-assert(m.match("alo" * (m.P"\n" + -1), "alo") == 4)
 
 
 -- bug in 0.12 (rc1)
@@ -137,18 +102,6 @@ assert(m.match((m.P"\128\187\191" + m.S"abc")^0, "\128\187\191") == 4)
 
 assert(m.match(m.S"\0\128\255\127"^0, string.rep("\0\128\255\127", 10)) ==
     4*10 + 1)
-
--- optimizations with optional parts
-assert(m.match(("ab" * -m.P"c")^-1, "abc") == 1)
-assert(m.match(("ab" * #m.P"c")^-1, "abd") == 1)
-assert(m.match(("ab" * m.B"c")^-1, "ab") == 1)
-assert(m.match(("ab" * m.P"cd"^0)^-1, "abcdcdc") == 7)
-
-assert(m.match(m.P"ab"^-1 - "c", "abcd") == 3)
-
-p = ('Aa' * ('Bb' * ('Cc' * m.P'Dd'^0)^0)^0)^-1
-assert(p:match("AaBbCcDdBbCcDdDdDdBb") == 21)
-
 
 -- bug in 0.12.2
 -- p = { ('ab' ('c' 'ef'?)*)? }
@@ -190,13 +143,6 @@ p = {'a',
 }
 checkerr("rule 'a' may be left recursive", m.match, p, "a")
 
--- Bug in peephole optimization of LPeg 0.12 (IJmp -> ICommit)
--- the next grammar has an original sequence IJmp -> ICommit -> IJmp L1
--- that is optimized to ICommit L1
-
-p = m.P { (m.P {m.P'abc'} + 'ayz') * m.V'y'; y = m.P'x' }
-assert(p:match('abcx') == 5 and p:match('ayzx') == 5 and not p:match'abc')
-
 
 do
   -- large dynamic Cc
@@ -225,27 +171,6 @@ do
   end
   checkerr("too deep", p.match, p, "x")
 end
-
-
--- tests for non-pattern as arguments to pattern functions
-
-p = { ('a' * m.V(1))^-1 } * m.P'b' * { 'a' * m.V(2); m.V(1)^-1 }
-assert(m.match(p, "aaabaac") == 7)
-
-p = m.P'abc' * 2 * -5 * true * 'de'  -- mix of numbers and strings and booleans
-
-assert(p:match("abc01de") == 8)
-assert(p:match("abc01de3456") == nil)
-
-p = 'abc' * (2 * (-5 * (true * m.P'de')))
-
-assert(p:match("abc01de") == 8)
-assert(p:match("abc01de3456") == nil)
-
-p = { m.V(2), m.P"abc" } *
-     (m.P{ "xx", xx = m.P"xx" } + { "x", x = m.P"a" * m.V"x" + "" })
-assert(p:match("abcaaaxx") == 7)
-assert(p:match("abcxx") == 6)
 
 
 print('+')
