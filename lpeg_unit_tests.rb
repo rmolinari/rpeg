@@ -388,7 +388,7 @@ class TestsFromLpegCode < Test::Unit::TestCase
       # TODO: why should the match return the full string instead of two copies of the string?
       #
       # Maybe a simple capture over a simple capture like this is collapsed to one capture, because otherwise the two values would
-      # always be the same.
+      # always be the same. But I don't understand how it happens in the LPEG code.
       assert_equal i, m.match(m.C(m.C(i)), 'a' * i).length
     end
 

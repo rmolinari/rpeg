@@ -312,15 +312,15 @@ class Pattern
     #   Creates a match-time capture. Unlike all other captures, this one is evaluated immediately when a match occurs (even if it
     #   is part of a larger pattern that fails later). It forces the immediate evaluation of all its nested captures and then calls
     #   function.
-
+    #
     #   The given function gets as arguments the entire subject, the current position (after the match of patt), plus any capture
     #   values produced by patt.
-
+    #
     #   The first value returned by function defines how the match happens. If the call returns a number, the match succeeds and the
     #   returned number becomes the new current position. (Assuming a subject s and current position i, the returned number must be
     #   in the range [i, len(s) + 1].) If the call returns true, the match succeeds without consuming any input. (So, to return true
     #   is equivalent to return i.) If the call returns false, nil, or no value, the match fails.
-
+    #
     #   Any extra values returned by the function become the values produced by the capture.
     def Cmt(patt, function)
       # LPEG uses a separate RUNTIME node type instead of CAPTURE because certain functions, like hascaptures and fixedlen, need
