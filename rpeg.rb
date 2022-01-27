@@ -1008,9 +1008,16 @@ module RPEG
           code << Instruction.new(i::SPAN, data: child.data)
         else
           p = child.code
-          code << Instruction.new(i::CHOICE, offset: 2 + p.size)
-          code += p
-          code << Instruction.new(i::PARTIAL_COMMIT, offset: -p.size)
+          e1, first_set = child.first_set(follow_set)
+          if child.head_fail? || (e1.zero? && first_set.disjoint?(follow_set))
+            code << testset_code(first_set, 2 + p.size)
+            code += p
+            code << Instruction.new(i::JUMP, offset: -(1 + p.size))
+          else
+            code << Instruction.new(i::CHOICE, offset: 2 + p.size)
+            code += p
+            code << Instruction.new(i::PARTIAL_COMMIT, offset: -p.size)
+          end
         end
       when NOT
         e, first_set = child.first_set
