@@ -71,6 +71,8 @@ require_relative 'parsing_machine'
 #   - other pattern-based optimizations: need to scan through the LPEG code again
 #     - headfail(), getFirst(); need to understand them
 #   - profiling
+# - LPEG's locale support
+#   - what would this look like in Ruby?
 module RPEG
   extend self
 
@@ -334,6 +336,9 @@ module RPEG
     P(thing).match(string, init, *extra_args)
   end
 
+  # The class representing "patterns" and containing the logic to turn them into programs for the virtual machine.#
+  #
+  # Very roughly, this is where the LPEG code in lptree.c and lpcode.c lives
   class Pattern
     NODE_TYPES = %i[
       charset char any seq ordered_choice repeated not and
@@ -505,7 +510,7 @@ module RPEG
       end
     end
 
-    private def fix_type(other)
+    def fix_type(other)
       return other if other.is_a?(Pattern)
 
       RPEG.P(other) # see what we can do
@@ -1122,7 +1127,7 @@ module RPEG
     # Offset is where to jump to if we don't match one of them.
     #
     # If offset is not given we don't mind: client code is responsible for that.
-    def testset_code(first_set, offset = nil)
+    private def testset_code(first_set, offset = nil)
       case first_set.size
       when 0
         Instruction.new(Instruction::JUMP, offset:) # we will always fail, so just jump
@@ -1135,7 +1140,7 @@ module RPEG
       end
     end
 
-    def charset_code(charset, dominating_test)
+    private def charset_code(charset, dominating_test)
       if charset.size == 1
         char_code(charset.first, dominating_test)
       elsif dominating_test&.op_code == Instruction::TEST_CHARSET && dominating_test&.data == charset
@@ -1146,7 +1151,7 @@ module RPEG
       end
     end
 
-    def char_code(char, dominating_test)
+    private def char_code(char, dominating_test)
       if dominating_test&.op_code == Instruction::TEST_CHAR && dominating_test&.data == char
         Instruction.new(Instruction::ANY)
       else
@@ -1165,7 +1170,7 @@ module RPEG
     # ** instructions (e.g., jump to return becomes a return; jump
     # ** to commit becomes a commit)
     # */
-    def optimize_jumps(program)
+    private def optimize_jumps(program)
       i = Instruction # shorthand
 
       program.each_with_index do |instr, idx|
@@ -1194,7 +1199,6 @@ module RPEG
       end
     end
 
-
     # LPEG's needfollow (lpcode.c)
     #
     # /*
@@ -1217,17 +1221,82 @@ module RPEG
       end
     end
 
+    private def verify_grammar
+      raise "Not a grammar!" unless type == GRAMMAR
+
+      # /* check for infinite loops inside rules */
+      child.each do |rule|
+        rule.verify_rule
+        raise "Grammar has potential infinite loop in rule '#{rule.data}'" if rule.loops?
+      end
+    end
+
+    # We check if a rule can be left-recursive, i.e., whether we can return to the rule without consuming any input. The plan is to
+    # walk the tree into subtrees whenever we see we can do so without consuming any input.
+    #
+    # LPEG comment follows. Note that we check for nullability directly for sanity's sake.
+    #
+    # /*
+    # ** Check whether a rule can be left recursive; raise an error in that
+    # ** case; otherwise return 1 iff pattern is nullable.
+    # ** The return value is used to check sequences, where the second pattern
+    # ** is only relevant if the first is nullable.
+    # ** Parameter 'nb' works as an accumulator, to allow tail calls in
+    # ** choices. ('nb' true makes function returns true.)
+    # ** Parameter 'passed' is a list of already visited rules, 'npassed'
+    # ** counts the elements in 'passed'.
+    # ** Assume ktable at the top of the stack.
+    # */
+    def verify_rule
+      raise "verify_rule called on something that isn't a rule" unless type == RULE
+
+      rules_seen = []
+
+      local_rec = lambda do |pattern, num_rules_seen|
+        case pattern.type
+        when CHAR, CHARSET, ANY, NTRUE, NFALSE, BEHIND
+        # no op
+        when NOT, AND, REPEATED, CAPTURE, RUNTIME
+          # nullable, so keep going
+          local_rec.call(pattern.child, num_rules_seen)
+        when CALL
+          local_rec.call(pattern.child, num_rules_seen)
+        when SEQ
+          local_rec.call(pattern.left, num_rules_seen)
+          # only check 2nd child if first is nullable
+          local_rec.call(pattern.right, num_rules_seen) if pattern.left.nullable?
+        when ORDERED_CHOICE
+          # must check both children
+          local_rec.call(pattern.left, num_rules_seen)
+          local_rec.call(pattern.right, num_rules_seen)
+        when RULE
+          raise "rule '#{pattern.data}' may be left-recursive" if rules_seen[0...num_rules_seen].include?(pattern)
+
+          num_rules_seen += 1
+          rules_seen[num_rules_seen] = pattern
+          local_rec.call(pattern.child, num_rules_seen)
+        when GRAMMAR
+        # LPEG says: /* sub-grammar cannot be left recursive */
+        # But why? I guess because we would have rejected it at creation.
+        else
+          raise "Unhandled case #{pattern.type} in verify_rule"
+        end
+      end
+
+      local_rec.call(self, 0)
+    end
+
     # LPEG's target (lpcode.c)
     #
     # The absolute target of the instruction at index idx
-    def target(program, idx)
+    private def target(program, idx)
       idx + program[idx].offset
     end
 
     # LPEG's finaltarget (lpcode.c)
     #
     # Find the final [absolute] destination of a sequence of jumps
-    def finaltarget(program, idx)
+    private def finaltarget(program, idx)
       idx = target(program, idx) while program[idx]&.op_code == Instruction::JUMP
       idx
     end
@@ -1235,7 +1304,7 @@ module RPEG
     # LPEG's finallabel (lpcode.c)
     #
     # final label (after traversing any jumps)
-    def finallabel(program, idx)
+    private def finallabel(program, idx)
       finaltarget(program, target(program, idx))
     end
 
@@ -1257,7 +1326,7 @@ module RPEG
       return unless type == GRAMMAR
 
       fix_up_grammar
-      Analysis.verify_grammar(self)
+      verify_grammar
     end
 
     # Special operation when closing open calls
@@ -1422,76 +1491,6 @@ module RPEG
       end
 
       rule_list.each { |rule| fix_it.call(rule) }
-    end
-  end
-  
-  # Namespace for some analysis methods
-  module Analysis
-    extend self
-
-    def verify_grammar(grammar)
-      raise "Not a grammar!" unless grammar.type == Pattern::GRAMMAR
-
-      # /* check for infinite loops inside rules */
-      grammar.child.each do |rule|
-        verify_rule(rule)
-        raise "Grammar has potential infinite loop in rule '#{rule.data}'" if rule.loops?
-      end
-    end
-
-    # We check if a rule can be left-recursive, i.e., whether we can return to the rule without consuming any input. The plan is to
-    # walk the tree into subtrees whenever we see we can do so without consuming any input.
-    #
-    # LPEG comment follows. Note that we check for nullability directly for sanity's sake.
-    #
-    # /*
-    # ** Check whether a rule can be left recursive; raise an error in that
-    # ** case; otherwise return 1 iff pattern is nullable.
-    # ** The return value is used to check sequences, where the second pattern
-    # ** is only relevant if the first is nullable.
-    # ** Parameter 'nb' works as an accumulator, to allow tail calls in
-    # ** choices. ('nb' true makes function returns true.)
-    # ** Parameter 'passed' is a list of already visited rules, 'npassed'
-    # ** counts the elements in 'passed'.
-    # ** Assume ktable at the top of the stack.
-    # */
-    #
-    # TODO: does it make sense to move this to Pattern proper?
-    def verify_rule(rule)
-      rules_seen = []
-
-      local_rec = lambda do |pattern, num_rules_seen|
-        case pattern.type
-        when Pattern::CHAR, Pattern::CHARSET, Pattern::ANY, Pattern::NTRUE, Pattern::NFALSE, Pattern::BEHIND
-          # no op
-        when Pattern::NOT, Pattern::AND, Pattern::REPEATED, Pattern::CAPTURE, Pattern::RUNTIME
-          # nullable, so keep going
-          local_rec.call(pattern.child, num_rules_seen)
-        when Pattern::CALL
-          local_rec.call(pattern.child, num_rules_seen)
-        when Pattern::SEQ
-          local_rec.call(pattern.left, num_rules_seen)
-          # only check 2nd child if first is nullable
-          local_rec.call(pattern.right, num_rules_seen) if pattern.left.nullable?
-        when Pattern::ORDERED_CHOICE
-          # must check both children
-          local_rec.call(pattern.left, num_rules_seen)
-          local_rec.call(pattern.right, num_rules_seen)
-        when Pattern::RULE
-          raise "rule '#{pattern.data}' may be left-recursive" if rules_seen[0...num_rules_seen].include?(pattern)
-
-          num_rules_seen += 1
-          rules_seen[num_rules_seen] = pattern
-          local_rec.call(pattern.child, num_rules_seen)
-        when Pattern::GRAMMAR
-        # LPEG says: /* sub-grammar cannot be left recursive */
-        # But why? I guess because we would have rejected it at creation.
-        else
-          raise "Unhandled case #{pattern.type} in verify_rule"
-        end
-      end
-
-      local_rec.call(rule, 0)
     end
   end
 
