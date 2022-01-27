@@ -920,8 +920,13 @@ module RPEG
     # - a TEST_CHAR, TEST_CHARSET, or TEST_ANY instruction that we can assume has succeeded and which might save us a little time
     # - see the tt argument sprinkled through the functions in LPEG's lpcode.c
     #
-    # NOTE: don't cache the results as we did before, because it depends on the arguments
-    def code(follow_set: FULL_CHAR_SET, dominating_test: nil)
+    # active_option
+    # - there is a CHOICE instruction still "active" in the code already generated
+    # - certain pattern types can take advantange of this to avoid another CHOICE instruction
+    # - this is called 'opt' in lpcode.c
+    #
+    # NOTE: don't cache the results as we did before, because the code depends on the arguments
+    def code(follow_set: FULL_CHAR_SET, dominating_test: nil, active_choice: false)
       code = []
       case type
       when CHARSET
@@ -969,8 +974,6 @@ module RPEG
         # ** - when p2 is empty and opt is true; a IPartialCommit can reuse
         # ** the Choice already active in the stack.
         # */
-        #
-        # I don't know what the "Choice already active in the stack" means, so I won't do that part until I have some idea.
         right_empty = right.type == NTRUE
         e1, left_first_set = left.first_set
         if left.head_fail? ||
@@ -989,13 +992,23 @@ module RPEG
           code << test
           code += left_code
           unless right_empty
-            right_code = right.code(follow_set:)
+            right_code = right.code(follow_set:, active_choice:)
             code << Instruction.new(i::JUMP, offset: 1 + right_code.size)
             code += right_code
           end
+        elsif active_choice && right_empty
+          code << Instruction.new(i::PARTIAL_COMMIT, 1)
+          code += child.code(active_choice: true)
         else
-          p1 = left.code(dominating_test:)
-          p2 = right.code(follow_set:)
+          test = testset_code(left_first_set) if e1.zero?
+
+          p1 = left.code(dominating_test: test, active_choice: right_empty)
+          p2 = right.code(follow_set:, active_choice:)
+
+          if test
+            test.offset = 3 + p1.size
+            code << test
+          end
 
           code << Instruction.new(i::CHOICE, offset: 2 + p1.size)
           code += p1
@@ -1007,14 +1020,22 @@ module RPEG
           # Special, quicker handling when the thing we are repeated over is a charset. See Ierusalimschy 4.3
           code << Instruction.new(i::SPAN, data: child.data)
         else
-          p = child.code
           e1, first_set = child.first_set(follow_set)
           if child.head_fail? || (e1.zero? && first_set.disjoint?(follow_set))
-            code << testset_code(first_set, 2 + p.size)
+            test = testset_code(first_set)
+            p = child.code(dominating_test: test)
+            test.offset = 2 + p.size
+            code << test
             code += p
             code << Instruction.new(i::JUMP, offset: -(1 + p.size))
           else
-            code << Instruction.new(i::CHOICE, offset: 2 + p.size)
+            p = child.code
+            code << testset_code(first_set, 3 + p.size) if e1.zero?
+            if active_choice
+              code << Instruction.new(i::PARTIAL_COMMIT, 1)
+            else
+              code << Instruction.new(i::CHOICE, offset: 2 + p.size)
+            end
             code += p
             code << Instruction.new(i::PARTIAL_COMMIT, offset: -p.size)
           end
