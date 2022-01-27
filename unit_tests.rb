@@ -1,5 +1,5 @@
 require 'test/unit'
-require_relative 'pattern'
+require_relative 'rpeg'
 
 require 'byebug'
 

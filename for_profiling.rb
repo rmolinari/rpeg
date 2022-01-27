@@ -1,6 +1,6 @@
 #!/usr/bin/env ruby
 
-require_relative 'pattern'
+require_relative 'rpeg'
 
 def assert(result)
   raise "assertion failed" unless result

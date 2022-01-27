@@ -1,5 +1,5 @@
 require 'test/unit'
-require_relative 'pattern'
+require_relative 'rpeg'
 require_relative 're'
 
 require 'byebug'
@@ -1069,7 +1069,7 @@ class TestsFromLpegCode < Test::Unit::TestCase
 
   # Helpers to make it easier to use the tests copied from the Lua code
   def m
-    Pattern
+    RPEG
   end
 
   # shorthand
@@ -1102,7 +1102,7 @@ class TestsFromLpegCode < Test::Unit::TestCase
   end
 
   # All 1-byte character codes in a string
-  def allchars; @all_chars ||= m::FULL_CHAR_SET.join; end
+  def allchars; @all_chars ||= m::Pattern::FULL_CHAR_SET.join; end
 
   def digit; m.S("0123456789"); end
   def upper; m.S("ABCDEFGHIJKLMNOPQRSTUVWXYZ"); end

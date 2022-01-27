@@ -2,11 +2,13 @@
 
 require 'byebug'
 
-require_relative 'pattern'
+require_relative 'rpeg'
 
 # A straight port of LPEG's re module, though without any support for locales
 module RE
   extend self
+
+  Pattern = RPEG::Pattern
 
   @mem = {} # memo space for patterns
   @fmem = {}
@@ -40,7 +42,7 @@ module RE
     cp = @fmem[p]
     unless cp
       cp = compile(p) / 0
-      cp = Pattern.P([Pattern.Cp() * cp * Pattern.Cp() + 1 * Pattern.V(0)])
+      cp = RPEG.P([RPEG.Cp() * cp * RPEG.Cp() + 1 * RPEG.V(0)])
       @fmem[p] = cp
     end
 
@@ -55,7 +57,7 @@ module RE
     cp = g[rep]
     unless cp
       cp = compile(p)
-      cp = Pattern.Cs((cp / rep + 1)**0)
+      cp = RPEG.Cs((cp / rep + 1)**0)
       g[rep] = cp
     end
     cp.match(s)
@@ -63,7 +65,7 @@ module RE
 
   # How to expose?
   private def internals
-    m = Pattern
+    m = RPEG
 
     any = m.P(1)
     lower = m.R("az")
@@ -191,7 +193,7 @@ module RE
     tonumber = ->(s) { Integer(s) }
 
     call_patt = lambda do |fun|
-      ->(*args) { Pattern.send(fun, *args) }
+      ->(*args) { RPEG.send(fun, *args) }
     end
 
     # The big guy! Wow. This will take some debugging
