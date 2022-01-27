@@ -936,20 +936,7 @@ module RPEG
       when ANY
         code << Instruction.new(i::ANY)
       when SEQ
-        # See LPEG's codeseq1 (lpcode.c) for the handling of the dominating test (if any)
-        # TODO: LPEG's optimization useing needfollow
-        if left.need_follow?
-          _, follow_set1 = right.first_set(follow_set)
-          code = left.code(follow_set: follow_set1, dominating_test:)
-        else
-          code = left.code(dominating_test:)
-        end
-        if left.fixed_len != 0
-          # /* can 'p1' consume anything? */
-          dominating_test = nil # /* invalidate test */
-          # /* else 'tt' still protects sib2 */
-        end
-        code += right.code(follow_set:, dominating_test:)
+        code += seq_code(follow_set, dominating_test)
       when NTRUE
       # we always succeed, which means we don't have to do anything at all
       when NFALSE
@@ -962,114 +949,13 @@ module RPEG
         # This is symbolic target for now. It will be converted to a numeric offset during GRAMMAR analysis
         code << Instruction.new(i::CALL, offset: data)
       when ORDERED_CHOICE
-        # From LPEG's cocdechoice (lpcode.c)
-        # /*
-        # ** Choice; optimizations:
-        # ** - when p1 is headfail or
-        # ** when first(p1) and first(p2) are disjoint, than
-        # ** a character not in first(p1) cannot go to p1, and a character
-        # ** in first(p1) cannot go to p2 (at it is not in first(p2)).
-        # ** (The optimization is not valid if p1 accepts the empty string,
-        # ** as then there is no character at all...)
-        # ** - when p2 is empty and opt is true; a IPartialCommit can reuse
-        # ** the Choice already active in the stack.
-        # */
-        right_empty = right.type == NTRUE
-        e1, left_first_set = left.first_set
-        if left.head_fail? ||
-           (e1.zero? && ((_, right_first_set = right.first_set(follow_set)); left_first_set.disjoint?(right_first_set)))
-
-          # We can optimize here. See the comment at ParsingMachine#test_char about how the LPEG approach (we we copy here) differs
-          # from what is described in Ierusalimschy's paper.
-          test = testset_code(left_first_set)
-
-          left_code = left.code(follow_set:, dominating_test: test)
-          offset = 1 + left_code.size
-          offset += 1 unless right_empty
-
-          test.offset = offset
-
-          code << test
-          code += left_code
-          unless right_empty
-            right_code = right.code(follow_set:, active_choice:)
-            code << Instruction.new(i::JUMP, offset: 1 + right_code.size)
-            code += right_code
-          end
-        elsif active_choice && right_empty
-          code << Instruction.new(i::PARTIAL_COMMIT, 1)
-          code += child.code(active_choice: true)
-        else
-          test = testset_code(left_first_set) if e1.zero?
-
-          p1 = left.code(dominating_test: test, active_choice: right_empty)
-          p2 = right.code(follow_set:, active_choice:)
-
-          if test
-            test.offset = 3 + p1.size
-            code << test
-          end
-
-          code << Instruction.new(i::CHOICE, offset: 2 + p1.size)
-          code += p1
-          code << Instruction.new(i::COMMIT, offset: 1 + p2.size)
-          code += p2
-        end
+        code += choice_code(follow_set, active_choice)
       when REPEATED
-        if child.type == CHARSET
-          # Special, quicker handling when the thing we are repeated over is a charset. See Ierusalimschy 4.3
-          code << Instruction.new(i::SPAN, data: child.data)
-        else
-          e1, first_set = child.first_set(follow_set)
-          if child.head_fail? || (e1.zero? && first_set.disjoint?(follow_set))
-            test = testset_code(first_set)
-            p = child.code(dominating_test: test)
-            test.offset = 2 + p.size
-            code << test
-            code += p
-            code << Instruction.new(i::JUMP, offset: -(1 + p.size))
-          else
-            p = child.code
-            code << testset_code(first_set, 3 + p.size) if e1.zero?
-            if active_choice
-              code << Instruction.new(i::PARTIAL_COMMIT, 1)
-            else
-              code << Instruction.new(i::CHOICE, offset: 2 + p.size)
-            end
-            code += p
-            code << Instruction.new(i::PARTIAL_COMMIT, offset: -p.size)
-          end
-        end
+        code += repeated_code(follow_set, active_choice)
       when NOT
-        e, first_set = child.first_set
-        if e.zero? && child.head_fail?
-          code << testset_code(first_set, 2)
-          code << Instruction.new(i::FAIL)
-        else
-          p = child.code
-
-          code << Instruction.new(i::CHOICE, offset: 2 + p.size)
-          code += p
-          code << Instruction.new(i::FAIL_TWICE)
-        end
+        code += not_code
       when AND
-        # LPEG:
-        # /*
-        # ** And predicate
-        # ** optimization: fixedlen(p) = n ==> <&p> == <p>; behind n
-        # ** (valid only when 'p' has no captures)
-        # */
-        p = child.code(dominating_test:)
-        len = child.fixed_len
-        if len && !child.has_captures?
-          code += p
-          code << Instruction.new(i::BEHIND, aux: len, dec: :and) if len.positive?
-        else
-          code << Instruction.new(i::CHOICE, offset: 2 + p.size)
-          code += p
-          code << Instruction.new(i::BACK_COMMIT, offset: 2)
-          code << Instruction.new(i::FAIL)
-        end
+        code += and_code(dominating_test)
       when BEHIND
         code << Instruction.new(i::BEHIND, aux: data) if data.positive?
         code += child.code
@@ -1093,50 +979,231 @@ module RPEG
         code[0] = code.first.clone
         code.first.dec = data # decorate with the nonterminal, but clone first to avoid unexpected mutations
       when GRAMMAR
-        start_line_of_nonterminal = {}
-        full_rule_code = []
-
-        # we need to put the initial nonterminal's rules first
-        initial_rule = child.find { |rule| rule.data == data }
-        raise "Cannot find initial rule, for #{data}" unless initial_rule
-
-        the_rules = [initial_rule] + child.find.reject { |r| r == initial_rule }
-
-        the_rules.each do |rule|
-          nonterminal = rule.data
-          start_line_of_nonterminal[nonterminal] = 2 + full_rule_code.size
-          full_rule_code += rule.code(follow_set: FULL_CHAR_SET) + [Instruction.new(i::RETURN)]
-        end
-
-        code << Instruction.new(i::CALL, offset: data) # call the nonterminal, in @data by fix_up_grammar
-        code << Instruction.new(i::JUMP, offset: 1 + full_rule_code.size) # we are done: jump to the line after the grammar's code
-        code += full_rule_code
-
-        # Now close the CALL instructions.
-        code.each_with_index do |instr, idx|
-          next unless instr.op_code == CALL
-
-          nonterminal = instr.offset # still symbolic
-          next if nonterminal.is_a?(Integer) # ... expect when we're in a subgrammar, since it has already been fixed up.
-
-          start_line = start_line_of_nonterminal[nonterminal]
-          raise "Nonterminal #{nonterminal} does not have a rule in grammar" unless start_line
-
-          # We replaced OPEN_CALL with CALL earlier in #fix_up_grammar. But, if the following instruction is a :return this a tail
-          # call and we can eliminate the stack push by using a :jump instead of the call. The following :return must remain, as we
-          # may reach there via another jump/commit/etc
-          offset = start_line - idx
-          dec = "->#{nonterminal}"
-          code[idx] = if code[finaltarget(code, idx + 1)]&.op_code == :return
-                        Instruction.new(i::JUMP, offset:, dec:)
-                      else
-                        Instruction.new(i::CALL, offset:, dec:)
-                      end
-        end
+        code += grammar_code
       else
         raise "Unhandled pattern type #{type}"
       end
 
+      code
+    end
+
+    # LPEG's codeseq1
+    #
+    # /*
+    # ** Code first child of a sequence
+    # ** (second child is called in-place to allow tail call)
+    # ** Return 'tt' for second child
+    # */
+    #
+    # We do both parts of the sequence as we don't do TCO
+    private def seq_code(follow_set, dominating_test)
+      code = []
+      if left.need_follow?
+        _, follow_set1 = right.first_set(follow_set)
+        code = left.code(follow_set: follow_set1, dominating_test:)
+      else
+        code = left.code(dominating_test:)
+      end
+      if left.fixed_len != 0
+        # /* can 'p1' consume anything? */
+        dominating_test = nil # /* invalidate test */
+        # /* else 'tt' still protects sib2 */
+      end
+      code += right.code(follow_set:, dominating_test:)
+      code
+    end
+
+    # LPEG's codechoice (lpcode.c)
+    #
+    # /*
+    # ** Choice; optimizations:
+    # ** - when p1 is headfail or
+    # ** when first(p1) and first(p2) are disjoint, than
+    # ** a character not in first(p1) cannot go to p1, and a character
+    # ** in first(p1) cannot go to p2 (at it is not in first(p2)).
+    # ** (The optimization is not valid if p1 accepts the empty string,
+    # ** as then there is no character at all...)
+    # ** - when p2 is empty and opt is true; a IPartialCommit can reuse
+    # ** the Choice already active in the stack.
+    # */
+    private def choice_code(follow_set, active_choice)
+      raise "Not an ORDERED_CHOICE pattern" unless type == ORDERED_CHOICE
+
+      code = []
+      right_empty = (right.type == NTRUE)
+      e1, left_first_set = left.first_set
+      if left.head_fail? ||
+         (e1.zero? && ((_, right_first_set = right.first_set(follow_set)) && left_first_set.disjoint?(right_first_set)))
+
+        # We can optimize here. See the comment at ParsingMachine#test_char about how the LPEG approach (which we copy) differs from
+        # what is described in Ierusalimschy's paper.
+        test = testset_code(left_first_set)
+
+        left_code = left.code(follow_set:, dominating_test: test)
+        offset = 1 + left_code.size
+        offset += 1 unless right_empty
+
+        test.offset = offset
+
+        code << test
+        code += left_code
+        unless right_empty
+          right_code = right.code(follow_set:, active_choice:)
+          code << Instruction.new(i::JUMP, offset: 1 + right_code.size)
+          code += right_code
+        end
+      elsif active_choice && right_empty
+        code << Instruction.new(i::PARTIAL_COMMIT, 1)
+        code += child.code(active_choice: true)
+      else
+        test = testset_code(left_first_set) if e1.zero?
+
+        p1 = left.code(dominating_test: test, active_choice: right_empty)
+        p2 = right.code(follow_set:, active_choice:)
+
+        if test
+          test.offset = 3 + p1.size
+          code << test
+        end
+
+        code << Instruction.new(i::CHOICE, offset: 2 + p1.size)
+        code += p1
+        code << Instruction.new(i::COMMIT, offset: 1 + p2.size)
+        code += p2
+      end
+      code
+    end
+
+    # LPEG's coderep (lpcode.c)
+    # /*
+    # ** Repetion; optimizations:
+    # ** When pattern is a charset, can use special instruction ISpan.
+    # ** When pattern is head fail, or if it starts with characters that
+    # ** are disjoint from what follows the repetions, a simple test
+    # ** is enough (a fail inside the repetition would backtrack to fail
+    # ** again in the following pattern, so there is no need for a choice).
+    # ** When 'opt' is true, the repetion can reuse the Choice already
+    # ** active in the stack.
+    # */
+    private def repeated_code(follow_set, active_choice)
+      raise "Not a REPEATED pattern" unless type == REPEATED
+
+      # Special, quicker handling when the thing we are repeated over is a charset. See Ierusalimschy 4.3
+      return [Instruction.new(i::SPAN, data: child.data)] if child.type == CHARSET
+
+      code = []
+      e1, first_set = child.first_set(follow_set)
+      if child.head_fail? || (e1.zero? && first_set.disjoint?(follow_set))
+        test = testset_code(first_set)
+        p = child.code(dominating_test: test)
+        test.offset = 2 + p.size
+        code << test
+        code += p
+        code << Instruction.new(i::JUMP, offset: -(1 + p.size))
+      else
+        p = child.code
+        code << testset_code(first_set, 3 + p.size) if e1.zero?
+        if active_choice
+          code << Instruction.new(i::PARTIAL_COMMIT, 1)
+        else
+          code << Instruction.new(i::CHOICE, offset: 2 + p.size)
+        end
+        code += p
+        code << Instruction.new(i::PARTIAL_COMMIT, offset: -p.size)
+      end
+      code
+    end
+
+    private def grammar_code
+      raise "Not a GRAMMAR pattern" unless type == GRAMMAR
+
+      code = []
+      start_line_of_nonterminal = {}
+      full_rule_code = []
+
+      # we need to put the initial nonterminal's rules first
+      initial_rule = child.find { |rule| rule.data == data }
+      raise "Cannot find initial rule, for #{data}" unless initial_rule
+
+      the_rules = [initial_rule] + child.find.reject { |r| r == initial_rule }
+
+      the_rules.each do |rule|
+        nonterminal = rule.data
+        start_line_of_nonterminal[nonterminal] = 2 + full_rule_code.size
+        full_rule_code += rule.code(follow_set: FULL_CHAR_SET) + [Instruction.new(i::RETURN)]
+      end
+
+      code << Instruction.new(i::CALL, offset: data) # call the nonterminal, in @data by fix_up_grammar
+      code << Instruction.new(i::JUMP, offset: 1 + full_rule_code.size) # we are done: jump to the line after the grammar's code
+      code += full_rule_code
+
+      # Now close the CALL instructions.
+      code.each_with_index do |instr, idx|
+        next unless instr.op_code == CALL
+
+        nonterminal = instr.offset # still symbolic
+        next if nonterminal.is_a?(Integer) # ... expect when we're in a subgrammar, since it has already been fixed up.
+
+        start_line = start_line_of_nonterminal[nonterminal]
+        raise "Nonterminal #{nonterminal} does not have a rule in grammar" unless start_line
+
+        # We replaced OPEN_CALL with CALL earlier in #fix_up_grammar. But, if the following instruction is a :return this a tail
+        # call and we can eliminate the stack push by using a :jump instead of the call. The following :return must remain, as we
+        # may reach there via another jump/commit/etc
+        offset = start_line - idx
+        dec = "->#{nonterminal}"
+        code[idx] = if code[finaltarget(code, idx + 1)]&.op_code == :return
+                      Instruction.new(i::JUMP, offset:, dec:)
+                    else
+                      Instruction.new(i::CALL, offset:, dec:)
+                    end
+      end
+    end
+
+    # LPEG's codeand (lpcode.c)
+    # /*
+    # ** And predicate
+    # ** optimization: fixedlen(p) = n ==> <&p> == <p>; behind n
+    # ** (valid only when 'p' has no captures)
+    # */
+    private def and_code(dominating_test)
+      code = []
+      p = child.code(dominating_test:)
+      len = child.fixed_len
+      if len && !child.has_captures?
+        code += p
+        code << Instruction.new(i::BEHIND, aux: len, dec: :and) if len.positive?
+      else
+        code << Instruction.new(i::CHOICE, offset: 2 + p.size)
+        code += p
+        code << Instruction.new(i::BACK_COMMIT, offset: 2)
+        code << Instruction.new(i::FAIL)
+      end
+      code
+    end
+
+    # LPEG's codenot (lpcode.c)
+    #
+    # /*
+    # ** Not predicate; optimizations:
+    # ** In any case, if first test fails, 'not' succeeds, so it can jump to
+    # ** the end. If pattern is headfail, that is all (it cannot fail
+    # ** in other parts); this case includes 'not' of simple sets. Otherwise,
+    # ** use the default code (a choice plus a failtwice).
+    # */
+    private def not_code
+      code = []
+      e, first_set = child.first_set
+      if e.zero? && child.head_fail?
+        code << testset_code(first_set, 2)
+        code << Instruction.new(i::FAIL)
+      else
+        p = child.code
+
+        code << Instruction.new(i::CHOICE, offset: 2 + p.size)
+        code += p
+        code << Instruction.new(i::FAIL_TWICE)
+      end
       code
     end
 
