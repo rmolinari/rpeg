@@ -221,13 +221,13 @@ class ParsingMachine
       end
     when Instruction::FAIL
       @i_ptr = :fail
-        #handle_fail_ptr
+      #handle_fail_ptr
     when Instruction::FAIL_TWICE
       # An optimization for the NOT implementation. We pop the top of the stack and discard it, and then enter the fail routine
       # again. For sanity's sake we'll check that the thing we are popping is a :state entry. See Ierusalimschy, 4.4
       _ = pop(:state)
       @i_ptr = :fail
-        #handle_fail_ptr
+      #  handle_fail_ptr
     when Instruction::CLOSE_RUN_TIME
       # The LPEG code for runtime captures is very complicated. Reading through it, it appears that the complexity comes from
       # needing to carefully manage the capture breadcrumbs wrt to the Lua values living on the Lua stack to avoid memory
@@ -316,8 +316,11 @@ class ParsingMachine
       @success = false
       done!
     else
+      # pop off stack elements until we get a full state to restore
       top = pop
-      return if top.type == :instruction
+      # handle_fail_ptr if top.type == :instruction
+      top = pop while top.type == :instruction
+      # return if top.type == :instruction
 
       @i_ptr = top.i_ptr
       @subject_index = top.subject_index
