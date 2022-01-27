@@ -16,11 +16,11 @@ module RE
 
   # What does "compiled" mean here?
   #
-  # Oh. Maybe it is the Pattern build from the regexp-y thing.
+  # Oh. Maybe it is the Pattern built from the regexp-y thing.
   def compile(p, *defs)
     return p if p.is_a?(Pattern)
 
-    defs = [{}] if defs.empty? # for the sake of p_Def, below
+    defs = [{}] if defs.empty? # for the sake of p_def, below
 
     cp = PATTERN.match(p, 0, *defs)
     raise "incorrect pattern" unless cp
@@ -29,12 +29,7 @@ module RE
   end
 
   def match(s, p, i = 0)
-    cp = @mem[p]
-
-    unless cp
-      cp = compile(p)
-      @mem[p] = cp
-    end
+    cp = (@mem[p] ||= compile(p))
     cp.match(s, i)
   end
 
@@ -52,7 +47,7 @@ module RE
   end
 
   def gsub(s, p, rep)
-    g = @gmem[p] || {}  #-- ensure gmem[p] is not collected while here. What does that mean?
+    g = @gmem[p] || {} #-- ensure gmem[p] is not collected while here. What does that mean?
     @gmem[p] = g
     cp = g[rep]
     unless cp
@@ -63,7 +58,6 @@ module RE
     cp.match(s)
   end
 
-  # How to expose?
   private def internals
     m = RPEG
 
@@ -76,42 +70,34 @@ module RE
     space = m.S(" \n\t")
     printable = m.R(' ~')
     word = alnum
-    x = {
-      alpha:,
-      digit:,
-      lower:,
-      upper:,
-      space:,
+    predef = {
+      alpha:, digit:, lower:, upper:, space:, alnum:, word:,
       graph: printable - space,
-      alnum:,
       xdigit: digit + m.R("af", "AF"),
       punct: printable - (space + alnum),
-      cntrl: any - printable,
-      word:
+      cntrl: any - printable
     }
-    x.keys.each do |key|
+    predef.keys.each do |key|
       short = key.to_s[0].to_sym
-      x[short] = x[key]
-      x[short.upcase] = any - x[key]
+      predef[short] = predef[key]
+      predef[short.upcase] = any - predef[key]
     end
-    x[:nl] = m.P("\n")
-    predef = x
+    predef[:nl] = m.P("\n")
 
-    # p_I = m.P(->(s,i) { print "#{i}   #{s[0, i-2]}"; return i }) # Diagnostic?
     name = m.R("AZ", "az", "__") * m.R("AZ", "az", "__", "09")**0
-    p_S = (predef[:space] + "--" * (any - predef[:nl])**0)**0
+    p_space = (predef[:space] + "--" * (any - predef[:nl])**0)**0
 
-    arrow = p_S * "<-"
+    arrow = p_space * "<-"
     seq_follow = m.P("/") + ")" + "}" + ":}" + "~}" + "|}" + (name * arrow) + -1
     name = m.C(name)
 
     # -- a defined name only have meaning in a given environment
-    p_Def = name * m.Carg(1)
+    p_def = name * m.Carg(1)
 
-    num = m.C(m.R("09")**1) * p_S / ->(s) { s.to_i }
-    p_String = "'" * m.C((any - "'")**0) * "'" + '"' * m.C((any - '"')**0) * '"'
+    num = m.C(m.R("09")**1) * p_space / ->(s) { s.to_i }
+    p_spacetring = "'" * m.C((any - "'")**0) * "'" + '"' * m.C((any - '"')**0) * '"'
 
-    defined = "%" * p_Def / lambda do |c, defs|
+    defined = "%" * p_def / lambda do |c, defs|
       cat = (defs && (defs[c] || defs[c.to_sym])) || predef[c.to_sym]
       raise "name '#{c}' undefined" unless cat
 
@@ -126,10 +112,10 @@ module RE
       c
     end
 
-    p_Range = m.Cs(any * (m.P("-") / "") * (any - "]")) / ->(s) { m.R(s) }
-    item = (defined + p_Range + m.C(any)) / ->(a) { m.P(a) }
+    p_range = m.Cs(any * (m.P("-") / "") * (any - "]")) / ->(s) { m.R(s) }
+    item = (defined + p_range + m.C(any)) / ->(a) { m.P(a) }
 
-    p_Class = "[" *
+    p_class = "[" *
               m.C(m.P("^")**-1) * # -- optional complement symbol
               m.Cf(item * (item - "]")**0, ->(y, z) { y + z }) / ->(c, p) { c == "^" ? any - p : p } *
               "]"
@@ -150,20 +136,15 @@ module RE
       np
     end
 
-    # I don't know what this is doing
     equalcap = lambda do |s, i, c|
       return nil unless c.is_a?(String)
 
       e = c.length + i
-      if s[i..(e-1)] == c
-        e
-      else
-        nil
-      end
+      e if s[i..(e - 1)] == c
     end
 
     adddef = lambda do |t, k, exp|
-      if t[k] then
+      if t[k]
         error("'#{k}' already defined as a rule")
       else
         t[k] = exp
@@ -171,11 +152,9 @@ module RE
       return t
     end
 
-    # local function firstdef (n, r) return adddef({n}, n, r) end
-    # Is this right?
     firstdef = ->(n, r) { adddef.call({}, n, r) }
 
-    f_NT = lambda do |n, b|
+    f_open_call = lambda do |n, b|
       raise "rule '#{n}' used outside a grammar" unless b
 
       m.V(n)
@@ -183,12 +162,12 @@ module RE
 
     # -- match a name and return a group of its corresponding definition
     # -- and 'f' (to be folded in 'Suffix')
-    defwithfunc = ->(f) { m.Cg(p_Def / getdef * m.Cc(f)) }
+    defwithfunc = ->(f) { m.Cg(p_def / getdef * m.Cc(f)) }
 
     patt_add = ->(p1, p2) { p1 + p2 }
     patt_mul = ->(p1, p2) { p1 * p2 }
     patt_rpt = ->(p1, n)  { p1**n }
-    patt_replace = ->(p1, x) { p1 / x }
+    patt_replace = ->(p1, rep) { p1 / rep }
     pos_capture = ->(*) { m.Cp }
     tonumber = ->(s) { Integer(s) }
 
@@ -196,19 +175,18 @@ module RE
       ->(*args) { RPEG.send(fun, *args) }
     end
 
-    # The big guy! Wow. This will take some debugging
     exp = m.P(
       {
         initial: :Exp,
-        Exp: p_S * (
+        Exp: p_space * (
           m.V("Grammar") +
-          m.Cf(m.V("Seq") * ("/" * p_S * m.V("Seq"))**0, patt_add)
+          m.Cf(m.V("Seq") * ("/" * p_space * m.V("Seq"))**0, patt_add)
         ),
         Seq: m.Cf(m.Cc(m.P("")) * m.V("Prefix")**0, patt_mul) * (+seq_follow + patt_error),
-        Prefix: ("&" * p_S * m.V("Prefix") / ->(p) { +p } +
-                 "!" * p_S * m.V("Prefix") / ->(p) { -p } +
+        Prefix: ("&" * p_space * m.V("Prefix") / ->(p) { +p } +
+                 "!" * p_space * m.V("Prefix") / ->(p) { -p } +
                  m.V("Suffix")),
-        Suffix: m.Cf(m.V("Primary") * p_S *
+        Suffix: m.Cf(m.V("Primary") * p_space *
                      ((m.P("+") * m.Cc(1, patt_rpt) +
                        m.P("*") * m.Cc(0, patt_rpt) +
                        m.P("?") * m.Cc(-1, patt_rpt) +
@@ -216,19 +194,19 @@ module RE
                          m.Cg(num * m.Cc(mult)) +
                          m.Cg(m.C(m.S("+-") * m.R("09")**1) / tonumber * m.Cc(patt_rpt))
                        ) +
-                       "->" * p_S * (
-                         m.Cg((p_String + num) * m.Cc(patt_replace)) +
+                       "->" * p_space * (
+                         m.Cg((p_spacetring + num) * m.Cc(patt_replace)) +
                          m.P("{}") * m.Cc(nil, call_patt[:Ct]) +
                          defwithfunc[patt_replace]
                        ) +
-                       "=>" * p_S * defwithfunc[call_patt[:Cmt]] +
-                       "~>" * p_S * defwithfunc[call_patt[:Cf]]
-                      ) * p_S
-                     )**0, ->(a, b, f) { f.call(a,b) }),
+                       "=>" * p_space * defwithfunc[call_patt[:Cmt]] +
+                       "~>" * p_space * defwithfunc[call_patt[:Cf]]
+                      ) * p_space
+                     )**0, ->(a, b, f) { f.call(a, b) }),
         Primary: (
           "(" * m.V("Exp") * ")" +
-          p_String / call_patt.call(:P) +
-          p_Class +
+          p_spacetring / call_patt.call(:P) +
+          p_class +
           defined +
           "{:" * (name * ":" + m.Cc(nil)) * m.V("Exp") * ":}" / ->(n, p) { m.Cg(p, n) } +
           "=" * name / ->(n) { m.Cmt(m.Cb(n), ->(*args) { equalcap[*args] }) } +
@@ -237,7 +215,7 @@ module RE
           "{|" * m.V("Exp") * "|}" / call_patt.call(:Ct) +
           "{" * m.V("Exp") * "}" / call_patt.call(:C) +
           m.P(".") * m.Cc(any) +
-          (name * -arrow + "<" * name * ">") * m.Cb("G") / ->(*args) { f_NT.call(*args) }
+          (name * -arrow + "<" * name * ">") * m.Cb("G") / ->(*args) { f_open_call.call(*args) }
         ),
         Definition: name * arrow * m.V("Exp"),
         Grammar: (
@@ -250,7 +228,7 @@ module RE
       }
     )
 
-    p_S * m.Cg(m.Cc(false), "G") * exp / call_patt.call(:P) * (-any + patt_error)
+    p_space * m.Cg(m.Cc(false), "G") * exp / call_patt.call(:P) * (-any + patt_error)
   end
 
   PATTERN = internals
