@@ -212,19 +212,22 @@ class ParsingMachine
     when Instruction::BEHIND
       n = instr.aux # the (fixed) length of the pattern we want to match.
       if n > @subject_index
-        # We can't jump back in the index so far
+        # We can't jump so far back in the subject
         @i_ptr = :fail
+        #handle_fail_ptr
       else
         @subject_index -= n
         @i_ptr += 1
       end
     when Instruction::FAIL
       @i_ptr = :fail
+        #handle_fail_ptr
     when Instruction::FAIL_TWICE
       # An optimization for the NOT implementation. We pop the top of the stack and discard it, and then enter the fail routine
       # again. For sanity's sake we'll check that the thing we are popping is a :state entry. See Ierusalimschy, 4.4
       _ = pop(:state)
       @i_ptr = :fail
+        #handle_fail_ptr
     when Instruction::CLOSE_RUN_TIME
       # The LPEG code for runtime captures is very complicated. Reading through it, it appears that the complexity comes from
       # needing to carefully manage the capture breadcrumbs wrt to the Lua values living on the Lua stack to avoid memory
@@ -291,6 +294,7 @@ class ParsingMachine
       @subject_index += 1
     else
       @i_ptr = :fail
+        #handle_fail_ptr
     end
   end
 
@@ -377,6 +381,7 @@ class ParsingMachine
     directive, *dyn_captures = results
     unless directive
       @i_ptr = :fail
+        #handle_fail_ptr
       return
     end
 
