@@ -11,13 +11,12 @@ require 'must_be'
 require_relative 'captures'
 require_relative 'parsing_machine'
 
-# This class is intended to play the same role as LPEG's lpeg module.
+# This is intended to play the same role as LPEG's lpeg module.
 #
 # Top-level differences from LPEG:
 #
-# - and patterns in LPEG are #patt (&patt in the first version) but +patt here
+# - AND patterns in LPEG are written as #patt (&patt in the first version) but +patt here
 #   - unary & apparently can't be overloaded in Ruby
-#   - this pattern matches when patt appears at the current location, but it doesn't consume any of the input
 #   - +patt doesnt' read well, even though -patt does. I think this is because binary plus is so much more common when buliding
 #     patterns than binary minus is.
 #     - I tried using the "&" operator by overriding #to_proc but the Ruby parser rejects the &patt expression.
@@ -28,10 +27,10 @@ require_relative 'parsing_machine'
 #
 # - repeating patterns still use exponentiation, but it now looks like patt**n rather than patt^n because of Ruby's syntax
 #
-# - grammars are represented by hashes or arrays. LPEG uses Lua tables (which are a mashup of hashtables and arrays)
+# - grammars are represented by hashes or arrays. LPEG uses Lua tables (which are mashups of hashtables and arrays)
 #
-#   If an array then the nonterminals aren't named and all open calls must use numeric indices. The first element of the array is
-#   either
+#   If an array is given then the nonterminals aren't named and all open calls must use numeric indices. The first element of the
+#   array is either
 #   - a non-negative integer 0, 1, 2, ... and specifies the (rule of the) initial nonterminal among the remaining elements with
 #     indices reckoned _without_ that initial integer
 #   - something else, which is interpreted as the pattern for the initial nonterminal
@@ -41,21 +40,20 @@ require_relative 'parsing_machine'
 #     nonterminal.
 #   - the open calls can refer either to the nonterminals (as strings or symbols) or to rule indices as they appear in the hash,
 #     ignoring the :initial key (if present)
-#   - :initial/"initial" can appear as a key in the hash to specify the initial nonterminal.
+#   - :initial/"initial" can appear as a key in the hash and its value specifies the initial nonterminal.
 #     - if it is a non-zero integer it gives the index of the initial terminal's rule, reckoned without the presence of the :initial
 #       key itself.
 #     - if it is a symbol or a string it specifies the initial nonterminal directly
 #
-# - "Table" captures return a Hash if there are named captures to represent, and an array otherwise (though this may change). But we
-#   continue to call them "table" captures even though there is no Table class in Ruby.
-#   - Changing the name to "Hash" captures implies an implementation that may not be accurate.
+# - "Table" captures return an instace of TableCapture, which impelements a little bit of a Lua's table functionality
+#   - other formats haven't worked out well
 #
 # Function captures
 #
 #   Various kinds of captures involve calling a function (proc) provided by client code. For example, the construction (patt / fn)
 # takes the captures made by patt and passes them as arguments to fn. Then the values returned by fn become the captures of the
 # expression. Lua is better than Ruby at distinguishing between a function that returns multiple values and one that returns a
-# single value that is an array. So, returns from function in contexts like this are treated as follows:
+# single value that is an array. In RPEG returns from function in contexts like this are treated as follows:
 #
 #   - [1, 2, 3]: multiple captures, 1, 2, 3.
 #     - this is the natural interpretation as it's the standard way that a Ruby function returns multiple values
@@ -85,9 +83,9 @@ module RPEG
     case charset
     when Set
       size = charset.size
-      return Pattern.new(Pattern::NFALSE) if size.zero?
-      return Pattern.new(Pattern::CHAR, data: charset.first) if size == 1
-      return Pattern.new(Pattern::ANY) if charset == Pattern::FULL_CHAR_SET
+      return P(false) if size.zero?
+      return P(charset.first) if size == 1
+      return P(1) if charset == Pattern::FULL_CHAR_SET
 
       Pattern.new(Pattern::CHARSET, data: charset)
     when String
@@ -156,7 +154,7 @@ module RPEG
   #
   # ref should be either
   #  - a non-negative integer n, referring to the n-th rule in the grammar (0-based) or
-  #  - a value that will be the key in the final grammar - a Hash or Array- of the rule being referenced
+  #  - a value that will be the key in the final grammar - a Hash or Array - of the rule being referenced
   #    - strings are turned into symbols
   def V(ref)
     ref = ref.to_sym if ref.is_a?(String)
@@ -336,7 +334,7 @@ module RPEG
     P(thing).match(string, init, *extra_args)
   end
 
-  # The class representing "patterns" and containing the logic to turn them into programs for the virtual machine.#
+  # The class representing "patterns" and containing the logic to turn them into programs for the virtual machine.
   #
   # Very roughly, this is where the LPEG code in lptree.c and lpcode.c lives
   class Pattern
@@ -474,8 +472,8 @@ module RPEG
     #   patt / string
     #
     #     Creates a string capture. It creates a capture string based on string. The captured value is a copy of string, except that
-    #     the character % works as an escape character: any sequence in string of the form %n, with n between 1 and 9, stands for the
-    #     match of the n-th capture in patt. The sequence %0 stands for the whole match. The sequence %% stands for a single %.
+    #     the character % works as an escape character: any sequence in string of the form %n, with n between 1 and 9, stands for
+    #     the match of the n-th capture in patt. The sequence %0 stands for the whole match. The sequence %% stands for a single %.
     #
     #   patt / number
     #
@@ -491,8 +489,8 @@ module RPEG
     #   patt / function
     #
     #     Creates a function capture. It calls the given function passing all captures made by patt as arguments, or the whole match
-    #     if patt made no capture. The values returned by the function are the final values of the capture. In particular, if function
-    #     returns no value, there is no captured value.
+    #     if patt made no capture. The values returned by the function are the final values of the capture. In particular, if
+    #     function returns no value, there is no captured value.
     def /(other)
       case other
       when String
@@ -764,7 +762,7 @@ module RPEG
       when CALL
         call_recursive(:has_captures?, false)
       when GRAMMAR
-        child.any? { |rule| rule.has_captures? }
+        child.any?(&:has_captures?)
       else
         case num_children
         when 0
@@ -1083,7 +1081,7 @@ module RPEG
         end
 
         code << Instruction.new(i::CALL, offset: data) # call the nonterminal, in @data by fix_up_grammar
-        code << Instruction.new(i::JUMP, offset: 1 + full_rule_code.size) # we are done: jump to the line after the grammar's coderam
+        code << Instruction.new(i::JUMP, offset: 1 + full_rule_code.size) # we are done: jump to the line after the grammar's code
         code += full_rule_code
 
         # Now close the CALL instructions.
@@ -1426,7 +1424,10 @@ module RPEG
           as_hash[key] = p
           initial_nonterminal = key if i == initial_rule_idx
         end
-        raise "Bad grammar: no rule correspnds to an index of #{initial_rule_dix} for initial nonterminal" unless initial_nonterminal
+
+        unless initial_nonterminal
+          raise "Bad grammar: no rule correspnds to an index of #{initial_rule_dix} for initial nonterminal"
+        end
 
         as_hash[:initial] = initial_nonterminal
         @data = as_hash
