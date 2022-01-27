@@ -67,7 +67,7 @@ require_relative 'parsing_machine'
 # TODO:
 # - program generation optimations
 #   - other pattern-based optimizations: need to scan through the LPEG code again
-#     - headfail(), getFirst(); need to understand them
+#     - I think I've done them all now
 #   - profiling
 # - LPEG's locale support
 #   - what would this look like in Ruby?
@@ -1591,10 +1591,10 @@ module RPEG
   end
 
   ########################################
-  # Experimental monkeypatching
+  # Monkeypatching
   #
   # Very annoyingly, Ruby's #coerce mechanism is only used by the Numeric types. This means it doesn't help with things like the
-  # convenient "a" + P(true). The only way I can think to make it work is to monkeypatch.
+  # convenient "a" + P(-1). The only way I can think to make it work is to monkeypatch.
 
   # Technique from https://stackoverflow.com/a/61438012/1299011
   module NonNumericOverloadExtension
