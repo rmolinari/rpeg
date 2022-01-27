@@ -14,7 +14,7 @@ require_relative 'captures'
 class Instruction
   OP_CODES = %i[
     char charset any jump choice call return commit back_commit
-    partial_commit span op_end fail fail_twice unreachable
+    partial_commit span op_end fail fail_twice
     open_capture close_capture close_run_time full_capture behind
     test_char test_charset test_any
   ].each do |op|
@@ -54,7 +54,7 @@ class Instruction
       str << "  #{charset_rep(data)}"
     when JUMP, CHOICE, CALL, COMMIT, BACK_COMMIT, PARTIAL_COMMIT
       str << "  #{offset}"
-    when RETURN, OP_END, FAIL, FAIL_TWICE, UNREACHABLE, ANY, TEST_ANY
+    when RETURN, OP_END, FAIL, FAIL_TWICE, ANY, TEST_ANY
     # no-op
     when OPEN_CAPTURE, CLOSE_CAPTURE, FULL_CAPTURE, CLOSE_RUN_TIME
       str << "  data:#{data}, aux:#{aux}"
@@ -117,7 +117,13 @@ class ParsingMachine
   def initialize(program, subject, initial_pos, extra_args)
     @program = program.clone.freeze.must_only_contain(Instruction)
     @prog_len = @program_size
-    @subject = subject.clone.freeze
+
+    # When searching a large string (4.5 MB) for a benchmark I found that the search took an enormous amount of time (1300 s), and
+    # 95% of it was due to 3.6 million calls to String::[]. I don't know why this was so slow, as accessing a large string in a
+    # small scratch loop is fast. I am very confused. Converting the string to an array of chars is much faster (1300 s became 9 s).
+    @original_subject = subject.clone.freeze
+    @subject = subject.chars.freeze
+    @subject_size = @subject.size
 
     @i_ptr = 0 # index in @program of the next instruction
     @subject_index = initial_pos
@@ -141,52 +147,48 @@ class ParsingMachine
   end
 
   def run
-    step until done?
+    step until @done
   end
 
   def step
-    i = Instruction # shorthand
-
     if @i_ptr == :fail
       handle_fail_ptr
       return
     end
 
-    # raise "current instruction pointer #{@i_ptr} is negative" if @i_ptr < 0
-
     instr = @program[@i_ptr]
 
     case instr.op_code
-    when i::CHAR
-      check_char(instr.data == @subject[@subject_index])
-    when i::CHARSET
-      check_char(instr.data.include?(@subject[@subject_index]))
-    when i::ANY
-      check_char(@subject_index < @subject.size)
-    when i::TEST_CHAR
-      test_char(instr.data == @subject[@subject_index], instr.offset)
-    when i::TEST_CHARSET
+    when Instruction::TEST_CHARSET
       test_char(instr.data.include?(@subject[@subject_index]), instr.offset)
-    when i::TEST_ANY
-      test_char(@subject_index < @subject.size, instr.offset)
-    when i::JUMP
+    when Instruction::TEST_CHAR
+      test_char(instr.data == @subject[@subject_index], instr.offset)
+    when Instruction::TEST_ANY
+      test_char(@subject_index < @subject_size, instr.offset)
+    when Instruction::ANY
+      check_char(@subject_index < @subject_size)
+    when Instruction::CHARSET
+      check_char(instr.data.include?(@subject[@subject_index]))
+    when Instruction::CHAR
+      check_char(instr.data == @subject[@subject_index])
+    when Instruction::JUMP
       @i_ptr += instr.offset
-    when i::CHOICE
+    when Instruction::CHOICE
       # We push the offset for the other side of the choice
       push(:state, instr.offset)
       @i_ptr += 1
-    when i::CALL
+    when Instruction::CALL
       # Call is like jump, but we push the return address onto the stack first
       push(:instruction, 1)
       @i_ptr += instr.offset
-    when i::RETURN
+    when Instruction::RETURN
       @i_ptr = pop(:instruction).i_ptr
-    when i::COMMIT
+    when Instruction::COMMIT
       # we pop and discard the top of the stack (which must be a full state) and then do the jump given by arg1. Even though we
       # are discarding it check that it was a full state for sanity.
       _ = pop(:state)
       @i_ptr += instr.offset
-    when i::PARTIAL_COMMIT
+    when Instruction::PARTIAL_COMMIT
       # Sort of a combination of commit (which pops) and choice (which pushes), but we just tweak the top of the stack. See
       # Ierusalimschy, sec 4.3
       stack_top = peek(:state)
@@ -195,19 +197,19 @@ class ParsingMachine
       stack_top.subject_index = @subject_index
       stack_top.bread_count = @bread_count
       @i_ptr += instr.offset
-    when i::BACK_COMMIT
+    when Instruction::BACK_COMMIT
       # A combination of a fail and a commit. We backtrack, but then jump to the specified instruction rather than using the
       # backtrack label. It's used for the AND pattern. See Ierusalimschy, 4.4
       stack_top = pop(:state)
       @subject_index = stack_top.subject_index
       @bread_count = stack_top.bread_count
       @i_ptr += instr.offset
-    when i::SPAN
+    when Instruction::SPAN
       # Special instruction for when we are repeating over a charset, which is common. We just consume as many maching characters
       # as there are. This never fails as we can always match at least zero.
       @subject_index += 1 while instr.data.include?(@subject[@subject_index])
       @i_ptr += 1
-    when i::BEHIND
+    when Instruction::BEHIND
       n = instr.aux # the (fixed) length of the pattern we want to match.
       if n > @subject_index
         # We can't jump back in the index so far
@@ -216,23 +218,23 @@ class ParsingMachine
         @subject_index -= n
         @i_ptr += 1
       end
-    when i::FAIL
+    when Instruction::FAIL
       @i_ptr = :fail
-    when i::FAIL_TWICE
+    when Instruction::FAIL_TWICE
       # An optimization for the NOT implementation. We pop the top of the stack and discard it, and then enter the fail routine
       # again. For sanity's sake we'll check that the thing we are popping is a :state entry. See Ierusalimschy, 4.4
       _ = pop(:state)
       @i_ptr = :fail
-    when i::CLOSE_RUN_TIME
+    when Instruction::CLOSE_RUN_TIME
       # The LPEG code for runtime captures is very complicated. Reading through it, it appears that the complexity comes from
       # needing to carefully manage the capture breadcrumbs wrt to the Lua values living on the Lua stack to avoid memory
       # leaks. We don't have to worry about that here, as everything is in Ruby and we can leave the hard stuff to the garbage
       # collector. The remaining work is little more than we have with a function capture.
       result = run_time_capture
       handle_run_time_capture_result(result)
-    when i::OPEN_CAPTURE
+    when Instruction::OPEN_CAPTURE
       record_capture(instr, size: 0, subject_index: @subject_index)
-    when i::CLOSE_CAPTURE
+    when Instruction::CLOSE_CAPTURE
       # As in LPEG: "if possible, turn capture into a full capture"
       raise "Close capture without an open" unless @bread_count.positive?
 
@@ -244,15 +246,13 @@ class ParsingMachine
       else
         record_capture(instr, size: 1, subject_index: @subject_index)
       end
-    when i::FULL_CAPTURE
+    when Instruction::FULL_CAPTURE
       # We have an all-in-one match, and the "capture length" tells us how far back in the subject the match started.
       len = (instr.aux[:capture_length] || 0).must_be(Integer)
       record_capture(instr, size: 1 + len, subject_index: @subject_index - len)
-    when i::OP_END
+    when Instruction::OP_END
       @success = true
       done!
-    when i::UNREACHABLE
-      raise "VM reached :unreachable instruction at line #{@i_ptr}"
     else
       raise "Unhandled op code #{instr.op_code}"
     end
@@ -384,7 +384,7 @@ class ParsingMachine
                        @subject_index
                      else
                        directive.must_be_a(Integer)
-                       if directive < @subject_index || directive > @subject.size
+                       if directive < @subject_index || directive > @subject_size
                          raise 'invalid position returned by match-time capture'
                        end
 

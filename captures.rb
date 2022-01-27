@@ -296,7 +296,7 @@ class CaptureState
       cpos = open_capture.subject_index
       match_len = open_capture.size - 1
       match_range = cpos...(cpos + match_len)
-      push @subject[match_range]
+      push @subject[match_range].join
       return 1
     end
 
@@ -308,7 +308,7 @@ class CaptureState
     advance
     if add_extra || count.zero?
       match_range = (open_capture.subject_index)...(close_capture.subject_index)
-      push @subject[match_range]
+      push @subject[match_range].join
       count += 1
     end
     count.must_be.positive?
@@ -454,12 +454,12 @@ class CaptureState
     curr = breadcrumb.subject_index
     result = +""
     if breadcrumb.full?
-      result = @subject[curr, breadcrumb.size - 1]
+      result = @subject[curr, breadcrumb.size - 1].join
     else
       advance # skip open
       until current_breadcrumb.close?
         nxt = current_breadcrumb.subject_index
-        result << @subject[curr, nxt - curr]
+        result << @subject[curr, nxt - curr].join
         if (match = extract_one_string("replacement"))
           result << match
           curr = prev_end_index
@@ -468,7 +468,7 @@ class CaptureState
           curr = nxt
         end
       end
-      result << @subject[curr, current_breadcrumb.subject_index - curr]
+      result << @subject[curr, current_breadcrumb.subject_index - curr].join
     end
     advance
     result
@@ -502,7 +502,7 @@ class CaptureState
 
       str_cap = the_str_caps[capture_index]
       if str_cap.isstring
-        result << @subject[(str_cap.subject_start)...(str_cap.subject_end)]
+        result << @subject[(str_cap.subject_start)...(str_cap.subject_end)].join
         next
       end
 
@@ -565,7 +565,8 @@ class CaptureState
 
     proc = current_breadcrumb.data.must_be_a(Proc) # get the proc to call
 
-    args = [@subject, @subject_index]
+    @subject_as_str ||= @subject.join
+    args = [@subject_as_str, @subject_index]
     n = push_nested_captures
     args += pop(n) # prepare arguments for the function
     result = Array(proc.call(*args)) # ... and pass them to the proc

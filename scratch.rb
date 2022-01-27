@@ -1,24 +1,21 @@
 #!/usr/bin/env ruby
 
-class UnaryOps
-  def initialize(x)
-    @x = x
-  end
+require 'byebug'
 
-  define_method(",") do
-    @x + 1
-  end
+require_relative 'rpeg'
+require_relative 're'
 
-  def &
-    @x + 3
-  end
+@text = ARGF.each_line.to_a.join("\n")
 
-  define_method(",") do
-    @x + 1
-  end
+def search(p)
+  p = RE.compile(p)
+  RPEG.P [p + 1 * RPEG.V(0)]
 end
 
-foo = UnaryOps.new(1)
+string = RPEG.P('Jesus')
+searcher = search(string)
 
-puts foo.send(",")
-puts &foo
+start = Time.now
+puts searcher.match(@text)
+
+puts "Found in #{Time.now - start} s"
