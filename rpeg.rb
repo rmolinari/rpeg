@@ -6,7 +6,7 @@
 
 require 'set'
 require 'must_be'
-# MustBe.disable
+#MustBe.disable
 
 require_relative 'captures'
 require_relative 'parsing_machine'
@@ -1089,7 +1089,7 @@ module RPEG
       raise "Not a REPEATED pattern" unless type == REPEATED
 
       # Special, quicker handling when the thing we are repeated over is a charset. See Ierusalimschy 4.3
-      return [Instruction.new(i::SPAN, data: child.data)] if child.type == CHARSET
+      return [Instruction.new(i::SPAN, data: child.charset)] if child.charsetlike?
 
       code = []
       e1, first_set = child.first_set(follow_set)

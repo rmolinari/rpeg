@@ -442,8 +442,8 @@ class ParsingMachine
   # This stub needs to be in ParsingMachine and not CaptureState because it must modify @bread_count
   def run_time_capture
     # We need point to the close capture we just hit. LPEG is tricksy here: there isn't actually a CLOSE capture/breadcrumb yet, but
-    # the data structure - an array of Capture objects - means that the "next capture" memory be interpreted as a Capture. For once
-    # we have to do something manually that in the C code happens "automatically"
+    # the data structure - an array of Capture objects - means that the "next capture" memory is interpreted as a Capture.  We have
+    # to do something manually that in the C code happens "automatically"
     add_capture Capture::Breadcrumb.new(0, @subject_index, nil, Capture::CLOSE)
     capture_state = new_capture_state(@bread_count - 1) # start on the CLOSE we just tacked on
 

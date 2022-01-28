@@ -466,35 +466,6 @@ local re = require "re"
 
 local match, compile = re.match, re.compile
 
-
-
-
-
--- re.find discards any captures
-
-
-
-
-p = re.compile[[
-  block <- {| {:ident:space*:} line
-           ((=ident !space line) / &(=ident space) block)* |}
-  line <- {[^%nl]*} %nl
-  space <- '_'     -- should be ' ', but '_' is simpler for editors
-]]
-
-t= p:match[[
-1
-__1.1
-__1.2
-____1.2.1
-____n
-2
-__2.1
-]]
-checkeq(t, {"1", {"1.1", "1.2", {"1.2.1", "", ident = "____"}, ident = "__"},
-            "2", {"2.1", ident = "__"}, ident = ""})
-
-
 -- testing pre-defined names
 assert(os.setlocale("C") == "C")
 

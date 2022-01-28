@@ -808,6 +808,41 @@ class TestsFromLpegCode < Test::Unit::TestCase
          m.P(->(s, i, *) { [i, "aaa"] if i <= s.length} ) * 1)**0
 
     assert_equal ['a', 'aa', 20, 'a', 'aaa', 'aaa'],  p.match('abacc')
+
+
+    p = RE.compile(
+      <<~GRAM
+        block <- {| {:ident:space*:} line
+                 ((=ident !space line) / &(=ident space) block)* |}
+        line <- {[^%nl]*} %nl
+        space <- '_'     -- should be ' ', but '_' is simpler for editors
+      GRAM
+    )
+
+    t = p.match(
+      <<~INPUT
+        1
+        __1.1
+        __1.2
+        ____1.2.1
+        ____
+        2
+        __2.1
+      INPUT
+    )
+    assert_equal (
+      {
+        0 => "1",
+        1 => {
+          0 => "1.1",
+          1 => "1.2",
+          2 => {0 => "1.2.1", 1 => "", "ident" => "____"},
+          "ident" => "__"
+        },
+        2 => "2",
+        3 => {0 => "2.1", "ident" => "__"},
+        "ident" => ""
+      }), t
   end
 
   def test_re
