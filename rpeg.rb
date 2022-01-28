@@ -937,7 +937,7 @@ module RPEG
       when ANY
         code << Instruction.new(i::ANY)
       when SEQ
-        code += seq_code(follow_set, dominating_test)
+        code.concat seq_code(follow_set, dominating_test)
       when NTRUE
       # we always succeed, which means we don't have to do anything at all
       when NFALSE
@@ -950,37 +950,37 @@ module RPEG
         # This is symbolic target for now. It will be converted to a numeric offset during GRAMMAR analysis
         code << Instruction.new(i::CALL, offset: data)
       when ORDERED_CHOICE
-        code += choice_code(follow_set, active_choice)
+        code.concat choice_code(follow_set, active_choice)
       when REPEATED
-        code += repeated_code(follow_set, active_choice)
+        code.concat repeated_code(follow_set, active_choice)
       when NOT
-        code += not_code
+        code.concat not_code
       when AND
-        code += and_code(dominating_test)
+        code.concat and_code(dominating_test)
       when BEHIND
         code << Instruction.new(i::BEHIND, aux: data) if data.positive?
-        code += child.code
+        code.concat child.code
       when CAPTURE
         c = child.code(follow_set:, dominating_test:)
         len = fixed_len
         if len && !child.has_captures?
-          code += c
+          code.concat c
           code << Instruction.new(i::FULL_CAPTURE, data:, aux: { capture_length: len, kind: capture })
         else
           code << Instruction.new(i::OPEN_CAPTURE, data:, aux: { kind: capture })
-          code += c
+          code.concat c
           code << Instruction.new(i::CLOSE_CAPTURE, aux: { kind: Capture::CLOSE })
         end
       when RUNTIME
         code << Instruction.new(i::OPEN_CAPTURE, data:, aux: { kind: Capture::GROUP })
-        code += child.code(follow_set: FULL_CHAR_SET, dominating_test:)
+        code.concat child.code(follow_set: FULL_CHAR_SET, dominating_test:)
         code << Instruction.new(i::CLOSE_RUN_TIME, aux: { kind: Capture::CLOSE })
       when RULE
         code = child.code(follow_set:)
         code[0] = code.first.clone
         code.first.dec = data # decorate with the nonterminal, but clone first to avoid unexpected mutations
       when GRAMMAR
-        code += grammar_code
+        code.concat grammar_code
       else
         raise "Unhandled pattern type #{type}"
       end
@@ -1010,7 +1010,7 @@ module RPEG
         dominating_test = nil # /* invalidate test */
         # /* else 'tt' still protects sib2 */
       end
-      code += right.code(follow_set:, dominating_test:)
+      code.concat right.code(follow_set:, dominating_test:)
       code
     end
 
@@ -1047,15 +1047,15 @@ module RPEG
         test.offset = offset
 
         code << test
-        code += left_code
+        code.concat left_code
         unless right_empty
           right_code = right.code(follow_set:, active_choice:)
           code << Instruction.new(i::JUMP, offset: 1 + right_code.size)
-          code += right_code
+          code.concat right_code
         end
       elsif active_choice && right_empty
         code << Instruction.new(i::PARTIAL_COMMIT, 1)
-        code += child.code(active_choice: true)
+        code.concat child.code(active_choice: true)
       else
         test = testset_code(left_first_set) if e1.zero?
 
@@ -1068,9 +1068,9 @@ module RPEG
         end
 
         code << Instruction.new(i::CHOICE, offset: 2 + p1.size)
-        code += p1
+        code.concat p1
         code << Instruction.new(i::COMMIT, offset: 1 + p2.size)
-        code += p2
+        code.concat p2
       end
       code
     end
@@ -1099,7 +1099,7 @@ module RPEG
         p = child.code(dominating_test: test)
         test.offset = 2 + p.size
         code << test
-        code += p
+        code.concat p
         code << Instruction.new(i::JUMP, offset: -(1 + p.size))
       else
         p = child.code
@@ -1109,7 +1109,7 @@ module RPEG
         else
           code << Instruction.new(i::CHOICE, offset: 2 + p.size)
         end
-        code += p
+        code.concat p
         code << Instruction.new(i::PARTIAL_COMMIT, offset: -p.size)
       end
       code
@@ -1131,12 +1131,12 @@ module RPEG
       the_rules.each do |rule|
         nonterminal = rule.data
         start_line_of_nonterminal[nonterminal] = 2 + full_rule_code.size
-        full_rule_code += rule.code(follow_set: FULL_CHAR_SET) + [Instruction.new(i::RETURN)]
+        full_rule_code.concat rule.code(follow_set: FULL_CHAR_SET) + [Instruction.new(i::RETURN)]
       end
 
       code << Instruction.new(i::CALL, offset: data) # call the nonterminal, in @data by fix_up_grammar
       code << Instruction.new(i::JUMP, offset: 1 + full_rule_code.size) # we are done: jump to the line after the grammar's code
-      code += full_rule_code
+      code.concat full_rule_code
 
       # Now close the CALL instructions.
       code.each_with_index do |instr, idx|
@@ -1172,11 +1172,11 @@ module RPEG
       p = child.code(dominating_test:)
       len = child.fixed_len
       if len && !child.has_captures?
-        code += p
+        code.concat p
         code << Instruction.new(i::BEHIND, aux: len, dec: :and) if len.positive?
       else
         code << Instruction.new(i::CHOICE, offset: 2 + p.size)
-        code += p
+        code.concat p
         code << Instruction.new(i::BACK_COMMIT, offset: 2)
         code << Instruction.new(i::FAIL)
       end
@@ -1202,7 +1202,7 @@ module RPEG
         p = child.code
 
         code << Instruction.new(i::CHOICE, offset: 2 + p.size)
-        code += p
+        code.concat p
         code << Instruction.new(i::FAIL_TWICE)
       end
       code

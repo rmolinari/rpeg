@@ -170,6 +170,7 @@ class CaptureState
   # nil might be in the stack, so we need to count rather than simply check pop for truthiness
   def pop(num = nil)
     if num
+      raise "Cannot pop off a negative number of elements" if num.negative?
       raise "There are not #{num} captures to pop" if num > @captures.size
 
       @captures.pop(num)
@@ -363,11 +364,12 @@ class CaptureState
 
   # This is LPEG's foldcap (lpcap.c)
   def push_fold_capture
-    fn = current_breadcrumb.data.must_be
+    raise "no initial value for fold capture" if current_breadcrumb.full?
 
-    if current_breadcrumb.full? ||
-       (advance; current_breadcrumb.close?) ||
-       (n = push_capture).zero?
+    fn = current_breadcrumb.data.must_be
+    advance
+
+    if current_breadcrumb.close? || (n = push_capture).zero?
       raise "no initial value for fold capture"
     end
 
