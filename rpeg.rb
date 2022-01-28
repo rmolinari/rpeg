@@ -6,7 +6,8 @@
 
 require 'set'
 require 'must_be'
-#MustBe.disable
+
+MustBe.disable
 
 require_relative 'captures'
 require_relative 'parsing_machine'
@@ -358,7 +359,7 @@ module RPEG
     # extra_args: used by Argument Captures
     def match(str, init = 0, *extra_args)
       # Note that the program doesn't depend on the arguments so we can cache it
-      @program ||= optimize_jumps(code(follow_set: FULL_CHAR_SET) + [Instruction.new(Instruction::OP_END)])
+      @program ||= optimize_jumps(code(follow_set: FULL_CHAR_SET) + [Instruction.new(i::OP_END)])
 
       machine = ParsingMachine.new(@program, str, init, extra_args)
       machine.run
@@ -1223,32 +1224,32 @@ module RPEG
     private def testset_code(first_set, offset = nil)
       case first_set.size
       when 0
-        Instruction.new(Instruction::JUMP, offset:) # we will always fail, so just jump
+        Instruction.new(i::JUMP, offset:) # we will always fail, so just jump
       when 1
-        Instruction.new(Instruction::TEST_CHAR, offset:, data: first_set.first)
+        Instruction.new(i::TEST_CHAR, offset:, data: first_set.first)
       when FULL_CHAR_SET.size
-        Instruction.new(Instruction::TEST_ANY, offset:)
+        Instruction.new(i::TEST_ANY, offset:)
       else
-        Instruction.new(Instruction::TEST_CHARSET, offset:, data: first_set)
+        Instruction.new(i::TEST_CHARSET, offset:, data: first_set)
       end
     end
 
     private def charset_code(charset, dominating_test)
       if charset.size == 1
         char_code(charset.first, dominating_test)
-      elsif dominating_test&.op_code == Instruction::TEST_CHARSET && dominating_test&.data == charset
+      elsif dominating_test&.op_code == i::TEST_CHARSET && dominating_test&.data == charset
         # the "dominating test" has already checked for us so we can use ANY, which is quicker
-        Instruction.new(Instruction::ANY)
+        Instruction.new(i::ANY)
       else
-        Instruction.new(Instruction::CHARSET, data: charset)
+        Instruction.new(i::CHARSET, data: charset)
       end
     end
 
     private def char_code(char, dominating_test)
-      if dominating_test&.op_code == Instruction::TEST_CHAR && dominating_test&.data == char
-        Instruction.new(Instruction::ANY)
+      if dominating_test&.op_code == i::TEST_CHAR && dominating_test&.data == char
+        Instruction.new(i::ANY)
       else
-        Instruction.new(Instruction::CHAR, data: char)
+        Instruction.new(i::CHAR, data: char)
       end
     end
 
@@ -1390,7 +1391,7 @@ module RPEG
     #
     # Find the final [absolute] destination of a sequence of jumps
     private def finaltarget(program, idx)
-      idx = target(program, idx) while program[idx]&.op_code == Instruction::JUMP
+      idx = target(program, idx) while program[idx]&.op_code == i::JUMP
       idx
     end
 
