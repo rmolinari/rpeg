@@ -151,11 +151,6 @@ class ParsingMachine
   end
 
   def step
-    if @i_ptr == :fail
-      handle_fail_ptr
-      return
-    end
-
     instr = @program[@i_ptr]
 
     case instr.op_code
@@ -213,21 +208,18 @@ class ParsingMachine
       n = instr.aux # the (fixed) length of the pattern we want to match.
       if n > @subject_index
         # We can't jump so far back in the subject
-        @i_ptr = :fail
-        #handle_fail_ptr
+        handle_fail_ptr
       else
         @subject_index -= n
         @i_ptr += 1
       end
     when Instruction::FAIL
-      @i_ptr = :fail
-      #handle_fail_ptr
+      handle_fail_ptr
     when Instruction::FAIL_TWICE
       # An optimization for the NOT implementation. We pop the top of the stack and discard it, and then enter the fail routine
       # again. For sanity's sake we'll check that the thing we are popping is a :state entry. See Ierusalimschy, 4.4
       _ = pop(:state)
-      @i_ptr = :fail
-      #  handle_fail_ptr
+      handle_fail_ptr
     when Instruction::CLOSE_RUN_TIME
       # The LPEG code for runtime captures is very complicated. Reading through it, it appears that the complexity comes from
       # needing to carefully manage the capture breadcrumbs wrt to the Lua values living on the Lua stack to avoid memory
@@ -293,8 +285,7 @@ class ParsingMachine
       @i_ptr += 1
       @subject_index += 1
     else
-      @i_ptr = :fail
-        #handle_fail_ptr
+      handle_fail_ptr
     end
   end
 
@@ -310,7 +301,7 @@ class ParsingMachine
     @i_ptr += success ? 1 : offset
   end
 
-  # Not for the FAIL op_code, but for when the instruction pointer is :fail
+  # We have to backtrack, or fail the match if we can't
   private def handle_fail_ptr
     if @stack.empty?
       @success = false
@@ -318,9 +309,7 @@ class ParsingMachine
     else
       # pop off stack elements until we get a full state to restore
       top = pop
-      # handle_fail_ptr if top.type == :instruction
-      top = pop while top.type == :instruction
-      # return if top.type == :instruction
+      return handle_fail_ptr if top.type == :instruction
 
       @i_ptr = top.i_ptr
       @subject_index = top.subject_index
@@ -383,8 +372,7 @@ class ParsingMachine
   def handle_run_time_capture_result(results)
     directive, *dyn_captures = results
     unless directive
-      @i_ptr = :fail
-        #handle_fail_ptr
+      handle_fail_ptr
       return
     end
 

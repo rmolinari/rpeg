@@ -205,7 +205,10 @@ class TestsFromLpegCode < Test::Unit::TestCase
     bad_grammar.call({ x: m.P('a') * m.V("y")**1, y: +m.P(1) }, "rule 'x'")
 
     assert_equal 1, m.match({ x: 'a' * -m.V(0) }, "aaa")
+
+    $do_it = true
     assert_nil m.match({ x: 'a' * -m.V(0) }, "aaaa")
+    $do_it = false
 
     # -- good x bad grammars
     m.P([('a' * m.V(0))**-1])
