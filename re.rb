@@ -17,45 +17,45 @@ module RE
   # What does "compiled" mean here?
   #
   # Oh. Maybe it is the Pattern built from the regexp-y thing.
-  def compile(p, *defs)
-    return p if p.is_a?(Pattern)
+  def compile(pattern, *defs)
+    return pattern if pattern.is_a?(Pattern)
 
     defs = [{}] if defs.empty? # for the sake of p_def, below
 
-    cp = PATTERN.match(p, 0, *defs)
+    cp = PATTERN.match(pattern, 0, *defs)
     raise "incorrect pattern" unless cp
 
     cp
   end
 
-  def match(s, p, i = 0)
-    cp = (@mem[p] ||= compile(p))
-    cp.match(s, i)
+  def match(str, pattern, start_pos = 0)
+    cp = (@mem[pattern] ||= compile(pattern))
+    cp.match(str, start_pos)
   end
 
-  def find(s, p, i = 0)
-    cp = @fmem[p]
+  def find(str, pattern, start_pos = 0)
+    cp = @fmem[pattern]
     unless cp
-      cp = compile(p) / 0
+      cp = compile(pattern) / 0
       cp = RPEG.P([RPEG.Cp() * cp * RPEG.Cp() + 1 * RPEG.V(0)])
-      @fmem[p] = cp
+      @fmem[pattern] = cp
     end
 
-    i, e = cp.match(s, i)
+    i, e = cp.match(str, start_pos)
 
     return [i, e - 1] if i
   end
 
-  def gsub(s, p, rep)
-    g = @gmem[p] || {} #-- ensure gmem[p] is not collected while here. What does that mean?
-    @gmem[p] = g
+  def gsub(str, pattern, rep)
+    g = @gmem[pattern] || {} #-- ensure gmem[p] is not collected while here. What does that mean?
+    @gmem[pattern] = g
     cp = g[rep]
     unless cp
-      cp = compile(p)
+      cp = compile(pattern)
       cp = RPEG.Cs((cp / rep + 1)**0)
       g[rep] = cp
     end
-    cp.match(s)
+    cp.match(str)
   end
 
   private def internals
