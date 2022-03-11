@@ -18,9 +18,9 @@ require_relative 'parsing_machine'
 #
 # - AND patterns in LPEG are written as #patt (&patt in the first version) but +patt here
 #   - unary & apparently can't be overloaded in Ruby
-#   - +patt doesnt' read well, even though -patt does. I think this is because binary plus is so much more common when buliding
-#     patterns than binary minus is.
 #     - I tried using the "&" operator by overriding #to_proc but the Ruby parser rejects the &patt expression.
+#   - +patt doesn't read well, even though -patt does. I think this is because binary plus is so much more common when buliding
+#     patterns than binary minus is.
 #     - There doesn't seem to be another workable option. According to https://stackoverflow.com/a/21060235/1299011 the unary
 #       operators are !, ~, +, and -. We use - already and ! needs to be avoided because of idiomiatic Ruby checks like !foo for
 #       existence. Operator ~ works, but that character is easy to mistake for a - when reading, which is bad. Ruby uses & as a
@@ -51,10 +51,10 @@ require_relative 'parsing_machine'
 #
 # Function captures
 #
-#   Various kinds of captures involve calling a function (proc) provided by client code. For example, the construction (patt / fn)
+# Various kinds of captures involve calling a function (proc) provided by client code. For example, the construction (patt / fn)
 # takes the captures made by patt and passes them as arguments to fn. Then the values returned by fn become the captures of the
 # expression. Lua is better than Ruby at distinguishing between a function that returns multiple values and one that returns a
-# single value that is an array. In RPEG returns from function in contexts like this are treated as follows:
+# single value that is an array. In RPEG, returns from function in contexts like this are treated as follows:
 #
 #   - [1, 2, 3]: multiple captures, 1, 2, 3.
 #     - this is the natural interpretation as it's the standard way that a Ruby function returns multiple values
@@ -1277,7 +1277,7 @@ module RPEG
           case program[final_t].op_code
           when i::RETURN, i::FAIL, i::FAIL_TWICE, i::OP_END
             # instructions with unconditional implicit jumps. The jump just becomes that instruction
-            program[idx] = program[final_t]
+            program[idx] = program[final_t].clone
           when i::COMMIT, i::PARTIAL_COMMIT, i::BACK_COMMIT
             # instruction with unconditional explicit jumps
             final_final_t = finallabel(program, final_t)

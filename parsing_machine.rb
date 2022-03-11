@@ -118,10 +118,10 @@ class ParsingMachine
     @program = program.clone.freeze.must_only_contain(Instruction)
     @prog_len = @program_size
 
-    # When searching a large string (4.5 MB) for a benchmark I found that the search took an enormous amount of time (1300 s), and
-    # 95% of it was due to 3.6 million calls to String::[]. I don't know why this was so slow, as accessing a large string in a
-    # small scratch loop is fast. I am very confused. Converting the string to an array of chars is much faster (1300 s became 9 s).
-    @original_subject = subject.clone.freeze
+    # When benchmarking with a large subject (4.5 MB) I found that the search took an enormous amount of time (1300 s), and 95% of
+    # it was due to 3.6 million calls to String::[]. I don't know why this was so slow, as accessing a large string in a small
+    # scratch loop is fast. I am very confused. Converting the string to an array of chars is much faster (1300 s became 9 s).
+    # @original_subject = subject.clone.freeze
     @subject = subject.chars.freeze
     @subject_size = @subject.size
 

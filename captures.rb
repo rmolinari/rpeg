@@ -2,7 +2,7 @@
 #
 # In terms of LPEG is corresponds to lpcap.h and lpcap.c
 
-# Capture-related data and functionality for the pattern tree (not the VM and post-match work)
+# Capture-related data and functionality
 module Capture
   KINDS = %i[const position argument simple group backref subst table fold string num query function close runtime].each do |kind|
     const_set kind.upcase, kind
