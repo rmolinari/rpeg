@@ -104,7 +104,7 @@ module RPEG
     when String
       # a sequence of CHAR patterns
       patt = P(true)
-      arg.chars.reverse.each do |ch|
+      arg.chars.reverse_each do |ch|
         patt = Pattern.new(Pattern::CHAR, data: ch) * patt
       end
       patt

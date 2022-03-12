@@ -350,7 +350,7 @@ class CaptureState
         # not a named group
         # k is the number we just got. We pop them back and put them in our result object
         k = push_capture
-        (0..(k - 1)).to_a.reverse.each do |i|
+        (0..(k - 1)).to_a.reverse_each do |i|
           indexed_results[next_index + i] = pop
         end
         next_index += k
@@ -494,7 +494,7 @@ class CaptureState
       end
 
       idx += 1
-      unless ('0'..'9').include?(fmt[idx])
+      unless ('0'..'9').cover?(fmt[idx])
         result << fmt[idx]
         next
       end
