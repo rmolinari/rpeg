@@ -1535,9 +1535,13 @@ module RPEG
         nonterminal = nonterminal.to_sym if nonterminal.is_a?(String)
         raise "Nonterminal symbol can be only a string or a symbol" unless nonterminal.is_a?(Symbol)
 
-        next if nonterminal == :initial # the only case in which we don't specify a rule pattern
-
-        grammar_hash[nonterminal] = RPEG.P(pattern)
+        # the only case in which we don't specify a rule pattern
+        if nonterminal == :initial
+          pattern.must_be_a(String, Symbol)
+          grammar_hash[:initial] = pattern.to_sym
+        else
+          grammar_hash[nonterminal] = RPEG.P(pattern)
+        end
       end
 
       initial_symbol = grammar_hash.delete(:initial)
