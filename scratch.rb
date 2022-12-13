@@ -28,9 +28,10 @@ grammar = RPEG.P(
     separator: RPEG.P(',') * RPEG.V('space'),
     term: RPEG.V('number') + RPEG.V('list'),
     sequence: (RPEG.V('term') * (RPEG.V('separator') * RPEG.V('sequence'))**-1) + RPEG.P(true),
-    # Wart: we need to clone the accumulator in the capture function because the empty array is only ever created once, when we call
-    # RPEG.Cc. So to avoid simply cramming things into the same array every time we need to clone it in the accumulator.
-    list: RPEG.Cf(RPEG.Cc([]) * RPEG.S('[') * RPEG.V('sequence') * RPEG.S(']'), ->(acc, v) { acc.clone << v }),
+    # Wart: We need to initialize the accumulator in the reduce function. If we try RPEG.Cc([]) then the accumulator array is set up
+    # once and for all when the capture is triggered, and everything, at every level, is appended to that array, which is a mess. So
+    # we capture nil and bootstrap with an empty array when we fold in the first value.
+    list: RPEG.Cf(RPEG.Cc(nil) * RPEG.S('[') * RPEG.V('sequence') * RPEG.S(']'), ->(acc, v) { (acc || []) << v })
   }
 )
 nested_things = grammar * -1
