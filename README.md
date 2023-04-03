@@ -5,7 +5,7 @@ RPeg is a Ruby port of [LPeg](http://www.inf.puc-rio.br/~roberto/lpeg/), Lua's p
 
 This project doesn't contain documentation of the library's functionality. For that, see the LPeg page, keeping in mind the
 differences in the Ruby port, described below. For a theoretical justification of the use of PEGs for pattern matching and a lot of
-detail of the internal design of LPeg, see [[Ierusalimschy]](#refereces).
+detail of the internal design of LPeg, see [[Ierusalimschy]](#references).
 
 ## Why You Should Use RPeg
 
@@ -19,8 +19,8 @@ easier to read and maintain.
 ## Why You Should Not Use RPeg
 
 I wrote RPeg as learning exercise and for my own illumination. I was interested in how regular expressions can be implemented
-efficiently using a virtual machine (see [[Cox]](#references)) and stumbled on Ierusalimschy's paper. I found that paper fascinating
-and decided to try to implement the algorithm in Ruby.
+efficiently using a virtual machine - see [[Cox]](#references) - and stumbled on Ierusalimschy's paper. I found that paper
+fascinating and decided to try to implement the algorithm in Ruby.
 
 ### It is slow
 
@@ -50,22 +50,57 @@ While I have made efforts to follow LPeg's functionality as closely as I can, al
 
 ## Using RPeg
 
-Patterns in RPeg are much like they are in LPeg.
+Patterns in RPeg are much as they are in LPeg. From the LPeg docs:
 
-``` ruby
-    require 'rpeg'
+> On the one hand, the result is usually much more verbose than the typical encoding of patterns using the so called regular
+> expressions (which typically are not regular expressions in the formal sense). On the other hand, first-class patterns allow much
+> better documentation (as it is easy to comment the code, to break complex definitions in smaller parts, etc.) and are extensible,
+> as we can define new functions to create and compose patterns.
 
-    # Pattern to match strings of balanced parentheses
-    patt1 = RPEG.P( [ "(" * ((1 - RPEG.S("()")) + RPEG.V(0))**0 * ")" ] )
-    patt2 = patt1 * -1
+Here is a table of basic patterns, mostly repeated from the LPeg documentation.
 
-    puts patt2.match "(()()(()))"  # 10
-    puts patt2.match "(()()(())"  # nil, i.e., no match
+| Operator         | Description                                |
+|:-----------------|:-------------------------------------------|
+| `RPEG.P(string)` | Matches `string` literally                 |
+| `RPEG.P(num)`    | Match n characters (for non-negative n)    |
+| `RPEG.P(-num)`   | Match only if there are _not_ n or more characters left. Equivalent to `"" - RPEG.P(num)` |
+| `RPEG.S(str)`    | Match any character in `str`, which can actually be a `String` or a `Set` |
+| `RPEG.R('xy')`    | Match any character in the range `'x'..'y'`. |
+| `patt ** n`      | Match at least n repetitions of `patt`. (LPeg uses `patt^n` here.) |
+| `patt ** -n`     | Match at most n repetitions of `patt`      |
+| `patt1 * patt2`  | Match `patt1` following by `patt2`         |
+| `patt1 + patt2`  | Match `patt1` or `patt2` (ordered choice)  |
+| `patt1 - patt2`  | Match `patt1` if `patt2` does not match    |
+| `-patt`          | Equivalent to `"" - patt`: `patt` does not match here |
+| `+patt`          | Match `patt` but consume no input. (LPeg uses `#patt` here.) |
+| `RPEG.B(patt)`   | Match `patt` "behind" - that is before - the current position and consume no input |
+
+There are many examples in the LPeg documentation [here](https://www.inf.puc-rio.br/~roberto/lpeg/#ex). Here is an LPeg example:
+
+``` lua
+local lpeg = require "lpeg"
+
+-- matches a word followed by end-of-string
+p = lpeg.R"az"^1 * -1
+
+print(p:match("hello"))        --> 6
+print(lpeg.match(p, "hello"))  --> 6
+print(p:match("1 hello"))      --> nil
 ```
 
-The examples in the LPeg documentation will work once modified for the syntax of RPeg.
+In Ruby we have
 
-TODO: add some actual RPeg examples.
+``` ruby
+require 'rpeg'
+
+p = RPEG.R("az")**1 * -1
+
+puts p.match("hello")           --> 5    # the match ends at index 5, which is off the end of the string. LPeg returns 6 because strings are 1-based in Lua
+puts RPEG.match(p, "hello")     --> 5
+puts p.match("1 hello")         --> nil  # no match; RPeg matches are anchored to the start of string
+```
+
+All of the LPeg examples work with RPeg once the necessary syntactic changes have been made.
 
 ## Differences Between RPeg and LPeg
 
