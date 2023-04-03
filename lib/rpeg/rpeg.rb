@@ -4,10 +4,12 @@
 #
 #   http://www.inf.puc-rio.br/~roberto/lpeg/#func
 
+# require 'byebug'
 require 'set'
 require 'must_be'
 
-MustBe.disable
+# TODO: disable this. For now I get a whole lot of warning messages
+# MustBe.disable
 
 require_relative 'captures'
 require_relative 'parsing_machine'
