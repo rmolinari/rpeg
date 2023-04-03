@@ -2,8 +2,7 @@
 
 require 'byebug'
 
-require_relative 'rpeg'
-require_relative 're'
+require_relative '../lib/rpeg'
 
 # @text = ARGF.each_line.to_a.join("\n")
 
@@ -55,25 +54,48 @@ pp nested_things.match "[1,2,3]"
 pp nested_things.match "[[1], 2, 3]"
 pp nested_things.match "[[[[[1], 1], 1], 1], 1]"
 
-# Try something similar with the RE library. CURRENT COMPLETELY BROKEN
-re_grammar = <<~GRAM
-  list <- (('' -> nul) '[' sequence ']') ~> append
-  sequence <- (term (separator sequence)?)?
-  term <- number / list
-  separator <- ',' space
-  space <- ' '*
-  number <- [0-9]+ -> to_int
-GRAM
-int_parser = RE.compile(
-  re_grammar,
-  {
-    nul: ->(*) { :nil },
-    to_int: ->(s) { Integer(s) },
-    append: ->(acc, v) { (acc == :nil ? [] : acc) << v},
-  }
-) * -1
+equalcount = RPEG.P( {
+  initial: :S,                         # initial rule name
+  S: "a" * RPEG.V(:B) + "b" * RPEG.V(:A) + "",
+  A: "a" * RPEG.V(:S) + "b" * RPEG.V(:A) * RPEG.V(:A),
+  B: "b" * RPEG.V(:S) + "a" * RPEG.V(:B) * RPEG.V(:B)
+} ) * -1
 
-pp int_parser.match("[]")
+pp equalcount.match "ababab" # -> 6
+pp equalcount.match "abbbaa" # -> 6
+pp equalcount.match "aabba"  # -> nil
+
+puts
+equalcount_arr = RPEG.P( [
+  0,                         # initial rule index
+  "a" * RPEG.V(2) + "b" * RPEG.V(1) + "",
+  "a" * RPEG.V(0) + "b" * RPEG.V(1) * RPEG.V(1),
+  "b" * RPEG.V(0) + "a" * RPEG.V(2) * RPEG.V(2)
+]) * -1
+
+pp equalcount_arr.match "ababab" # -> 6
+pp equalcount_arr.match "abbbaa" # -> 6
+pp equalcount_arr.match "aabba"  # -> nil
+
+# Try something similar with the RE library. CURRENT COMPLETELY BROKEN
+# re_grammar = <<~GRAM
+#   list <- (('' -> nul) '[' sequence ']') ~> append
+#   sequence <- (term (separator sequence)?)?
+#   term <- number / list
+#   separator <- ',' space
+#   space <- ' '*
+#   number <- [0-9]+ -> to_int
+# GRAM
+# int_parser = RE.compile(
+#   re_grammar,
+#   {
+#     nul: ->(*) { :nil },
+#     to_int: ->(s) { Integer(s) },
+#     append: ->(acc, v) { (acc == :nil ? [] : acc) << v},
+#   }
+# ) * -1
+
+# pp int_parser.match("[]")
 
 # string = RPEG.P('Alpha ')
 # searcher = search(string)

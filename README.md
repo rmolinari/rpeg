@@ -3,18 +3,21 @@
 RPeg is a Ruby port of [LPeg](http://www.inf.puc-rio.br/~roberto/lpeg/), Lua's pattern-matching library based on
 [Parsing Expression Grammars](https://en.wikipedia.org/wiki/Parsing_expression_grammar) (PEGs).
 
-This project doesn't contain documentation of the library's functionality. For that, see the LPeg page, keeping in mind the
-differences in the Ruby port, described below. For a theoretical justification of the use of PEGs for pattern matching and a lot of
-detail of the internal design of LPeg, see [[Ierusalimschy]](#references).
+For a theoretical justification of the use of PEGs for pattern matching and a lot of detail of the internal design of LPeg, see
+[[Ierusalimschy]](#references).
 
 ## Why You Should Use RPeg
 
-PEGs are flexible and expressive and, once complexity reaches a certain level, tend to be much more readable than regular
-expressions. PEGs are also more powerful than regular expressions, though the various ad hoc extensions to regexes - such as in
-PCRE - close the gap. The LPeg documentation and the Wikipedia article give some examples of what is possible.
+PEGs are flexible and expressive and, once complexity reaches a certain level, tend to be more readable than regular
+expressions and easier to document.   From the LPeg docs:
 
-Being able to use and combine patterns as Ruby objects allows us to build up complex patterns step by step. This makes the code
-easier to read and maintain.
+> On the one hand, the result is usually much more verbose than the typical encoding of patterns using the so called regular
+> expressions (which typically are not regular expressions in the formal sense). On the other hand, first-class patterns allow much
+> better documentation (as it is easy to comment the code, to break complex definitions in smaller parts, etc.) and are extensible,
+> as we can define new functions to create and compose patterns.
+
+PEGs are also more powerful than regular expressions, though the various ad hoc extensions to regexes - such as in PCRE - close the
+gap. The LPeg documentation and the Wikipedia article give some examples of what is possible.
 
 ## Why You Should Not Use RPeg
 
@@ -50,12 +53,7 @@ While I have made efforts to follow LPeg's functionality as closely as I can, al
 
 ## Using RPeg
 
-Patterns in RPeg are much as they are in LPeg. From the LPeg docs:
-
-> On the one hand, the result is usually much more verbose than the typical encoding of patterns using the so called regular
-> expressions (which typically are not regular expressions in the formal sense). On the other hand, first-class patterns allow much
-> better documentation (as it is easy to comment the code, to break complex definitions in smaller parts, etc.) and are extensible,
-> as we can define new functions to create and compose patterns.
+Patterns in RPeg are much as they are in LPeg.
 
 Here is a table of basic patterns, mostly repeated from the LPeg documentation.
 
@@ -95,29 +93,127 @@ require 'rpeg'
 
 p = RPEG.R("az")**1 * -1
 
-puts p.match("hello")           --> 5    # the match ends at index 5, which is off the end of the string. LPeg returns 6 because strings are 1-based in Lua
+puts p.match("hello")           --> 5    # the match ends at index 5, which is off the end
+                                         # of the string. LPeg returns 6 because strings are
+                                         # 1-based in Lua
 puts RPEG.match(p, "hello")     --> 5
-puts p.match("1 hello")         --> nil  # no match; RPeg matches are anchored to the start of string
+puts p.match("1 hello")         --> nil  # no match; RPeg matches are anchored to the
+                                         # start of string
 ```
 
 All of the LPeg examples work with RPeg once the necessary syntactic changes have been made.
 
-## Differences Between RPeg and LPeg
+## Grammars
+
+We can build up and transform patterns incrementally, but for more powerful recursive patterns we need _grammars_. In LPeg we
+represent grammars with tables, which are sort of a cross between arrays and hash tables. See (the LPeg
+docs)[https://www.inf.puc-rio.br/~roberto/lpeg/#grammar] for an introduction.
+
+Because we don't have tables in Ruby, RPeg allows them to be specified with arrays or hash tables. (Some experimentation was
+done and this seems to be the best way.)
+
+Here is an example grammar from the LPeg docs. It matches strings that have equal numbers of `a`'s and `b`'s
+``` lua
+equalcount = lpeg.P{
+  "S";   -- initial rule name
+  S = "a" * lpeg.V"B" + "b" * lpeg.V"A" + "",
+  A = "a" * lpeg.V"S" + "b" * lpeg.V"A" * lpeg.V"A",
+  B = "b" * lpeg.V"S" + "a" * lpeg.V"B" * lpeg.V"B",
+} * -1
+```
+The keys `S`, `A`, and `B` are the names of rules, and `lpeg.V<key>` refers to the given rule. Note how the initial rule name is
+specified first.
+
+In RPeg we can specify the same grammar with a hash table:
+
+``` ruby
+equalcount = RPEG.P( {
+  initial: :S,  # initial rule name
+  S: "a" * RPEG.V(:B) + "b" * RPEG.V(:A) + "",
+  A: "a" * RPEG.V(:S) + "b" * RPEG.V(:A) * RPEG.V(:A),
+  B: "b" * RPEG.V(:S) + "a" * RPEG.V(:B) * RPEG.V(:B)
+} ) * -1
+
+pp equalcount.match "ababab" # -> 6
+pp equalcount.match "abbbaa" # -> 6
+pp equalcount.match "aabba"  # -> nil
+```
+Note that we specify the initial rule via the `:initial` key and can use symbols for rule names and references. The pattern `-1`
+matches only at the end of the string.
+
+We can also specify the grammar in an array
+
+``` ruby
+equalcount_arr = RPEG.P( [
+  0,            # initial rule index
+  "a" * RPEG.V(2) + "b" * RPEG.V(1) + "",
+  "a" * RPEG.V(0) + "b" * RPEG.V(1) * RPEG.V(1),
+  "b" * RPEG.V(0) + "a" * RPEG.V(2) * RPEG.V(2)
+] ) * -1
+```
+Now the rules don't have names and are referred to by their indices in the array. If the first element of the array is a
+non-negative integer then it is dropped and refers to the index of the initial rule. (Note that the indices are reckoned after the
+first value is dropped.) Otherwise the first rule is the initial rule.
+
+## Captures
+
+Captures are a powerful part of LPeg:
+> A capture is a pattern that produces values (the so called semantic information) according to what it matches. LPeg offers several
+> kinds of captures, which produces values based on matches and combine these values to produce new values. Each capture may produce
+> zero or more values.
+Captures are beyond the scope of this readme. See their [documentation in LPeg](https://www.inf.puc-rio.br/~roberto/lpeg/#captures).
+RPeg follows the LPeg functionality with the following differences.
+
+TODO: give a brief introduction here.
+
+### Table captures
+
+Lua's tables - mixtures of arrays and hashtables - are very flexible and LPeg takes advantange of that. Ruby doesn't have quite what
+we need but Table captures - defined with `RPEG#Ct` - return instances of a special `TableCapture` class, which mimics a small part
+of Lua's table functionality. Other approaches have been tried and haven't worked well.
+
+TODO: give a description of `TableCapture` and an example.
+
+### Function captures
+
+Various kinds of captures involve calling a function (i.e., a proc) provided by client code. For example, the construction `patt /
+fn` takes the captures made by patt and passes them as arguments to fn. Then the values returned by fn become the captures of the
+expression.
+
+Lua is better than Ruby at distinguishing between a multiple return values and a single return value that is an array. In RPeg,
+returns from function in contexts like this are treated as follows:
+
+- `[1, 2, 3]`: multiple captures, 1, 2, 3.
+  - this is the natural interpretation as it's the standard way that a Ruby function returns multiple values
+- `[[1, 2, 3]]`: a single capture that is the array `[1, 2, 3]`.
+- nil: indicates no captures
+  - even if the function says something like "return nil", the capture code has no way to distinguish between that and a
+    function that returns nothing
+- `[nil]`: a single capture with value nil
+  - the weirdest case, but I don't see an alternative
+- otherwise, the single value returned by the function is the single captured value.
+
+Other approaches have been tried and haven't worked well in practice. TODO: consider using some sort of Maybe monad (but we need to
+distinguish `Some(nil)` - nil has been captured as a value - and `None` - there was no capture.)
+
+## Other Differences Between RPeg and LPeg
 
 Efforts have been made to keep RPeg's syntax as close to LPeg's as possible. But there are necessarily some differences enforced by
-Ruby.
+Ruby. They have already been noted in passing.
 
 ### Indexing
 
 Lua indexes strings and arrays (tables) from 1, while Ruby indexes from zero. RPeg follows the Ruby way. This means that
 
 - `match` functions return the Ruby-style index of the end of the matched substring
+  - TODO: is this still true?
 - "open" rules in grammars using numeric references use 0-indexing
 - other contexts in which an integer is used as index - such as argument captures - are 0-indexed
 
 ### 'And' patterns
 
-Given a pattern `p`, RPeg forms its "and" pattern using `+p` where LPeg uses `#p`.
+Given a pattern `p`, RPeg forms its "and" pattern using `+p` where LPeg uses `#p`. (This pattern matches if pattern p follows, but
+it doesn't consume any input.)
 
 Using unary `+` doesn't read very well in practice, even though unary `-` is OK for "not" patterns. I think this is because
 binary `+` is much more common in patterns than binary `-`. But the other unary operators are no good.
@@ -149,38 +245,6 @@ Otherwise the grammar is defined with a Hash. The keys are the nonterminal symbo
   - if it is a non-zero integer it gives the index of the initial terminal's rule, reckoned without the presence of the :initial
     key itself.
   - if it is a symbol or a string it specifies the initial nonterminal directly
-
-TODO: some examples
-
-### Table captures
-
-Table captures - defined with `#Ct` - return instances of a special `TableCapture` class, which mimics a small part of Lua's table
-functionality. Other approaches have been tried and haven't worked well.
-
-### Function captures
-
-Various kinds of captures involve calling a function (proc) provided by client code. For example, the construction `patt / fn` takes
-the captures made by patt and passes them as arguments to fn. Then the values returned by fn become the captures of the
-expression.
-
-Lua is better than Ruby at distinguishing between a function that returns multiple values and one that returns a single value that
-is an array. In RPeg, returns from function in contexts like this are treated as follows:
-
-- `[1, 2, 3]`: multiple captures, 1, 2, 3.
-  - this is the natural interpretation as it's the standard way that a Ruby function returns multiple values
-- `[[1, 2, 3]]`: a single capture that is the array `[1, 2, 3]`.
-- nil: no captures
-  - even if the function says something like "return nil", the capture code has no way to distinguish between that and a
-    function that returns nothing
-- `[nil]`: a single capture with value nil
-  - the weirdest case, but I don't see an alternative
-- otherwise, the single value returned by the function is the single captured value.
-
-## TODOs
-
-- make this into a useable README
-- turn the code into a gem
-
 
 # References
 - [Ierusalimschy] Ierusalimschy, R., _Text Pattern-Matching Tool based on Parsing Expression Grammars_, Software: Practice and Experience, 39(3):221-258, Wiley, 2009, https://doi.org/10.1002/spe.892, http://www.inf.puc-rio.br/~roberto/docs/peg.pdf (retrieved 2022-01-??).
