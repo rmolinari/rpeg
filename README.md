@@ -1,3 +1,16 @@
+# RPEG
+
+I started this project in Jan 2022 and had a great burst of energy. Unfortunately I didn't
+write much documentation at the time and now, over a year later, I'm reacquainting myself
+with the project.
+
+Current TODOs:
+- write a useful README
+- turn the code into a gem
+
+
+## Legacy note
+
 I have a sudden burst of interest in parsing and pattern matching issues and found this paper:
 
   Roberto Ierusaleimschy, _A Text Pattern-Matching Tool based on Parsing Expression Grammars_
