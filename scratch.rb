@@ -20,26 +20,60 @@ require_relative 're'
 #
 # etc.
 
-grammar = RPEG.P(
+m = RPEG
+
+grammar = m.P(
   {
     initial: :list,
-    space: RPEG.S(" \t")**0,
-    number: RPEG.R('09')**1 / ->(str) { str.to_i },
-    separator: RPEG.P(',') * RPEG.V('space'),
-    term: RPEG.V('number') + RPEG.V('list'),
-    sequence: (RPEG.V('term') * (RPEG.V('separator') * RPEG.V('sequence'))**-1) + RPEG.P(true),
-    # Wart: We need to initialize the accumulator in the reduce function. If we try RPEG.Cc([]) then the accumulator array is set up
+    space: m.S(" \t")**0,
+    number: m.R('09')**1 / ->(str) { str.to_i },
+    separator: m.P(',') * m.V('space'),
+    term: m.V('number') + m.V('list'),
+    sequence: (m.V('term') * (m.V('separator') * m.V('sequence'))**-1) + m.P(true),
+    # Wart: We need to initialize the accumulator in the reduce function. If we try m.Cc([]) then the accumulator array is set up
     # once and for all when the capture is triggered, and everything, at every level, is appended to that array, which is a mess. So
-    # we capture nil and bootstrap with an empty array when we fold in the first value.
-    list: RPEG.Cf(RPEG.Cc(nil) * RPEG.S('[') * RPEG.V('sequence') * RPEG.S(']'), ->(acc, v) { (acc || []) << v })
+    # we capture nil and bootstrap with a fresh empty array when we fold in the first value.
+    #
+    # Note that we need to capture the nil first up so that the reducer can detect that we are just starting the list. If we don't
+    # capture nil and instead try something like ->(acc, v) { Array(acc) << v } then, if the first element of the list is itself a
+    # list, we end up splicing it in (like a flatten) rather than adding it as the first element of the list.
+    #
+    # But this is still broken! If we are parsing the empty list "[]" then the reducer will never get called and the result of the
+    # parse is just nil, which is wrong.
+    #
+    # So try this: group all the captures - even zero - in a table, and then map that table to an Array. Because of another wart -
+    # the need to distingish between a function that represents multiple captures [1,2,3] and one that represents a single capture
+    # that is an array [[1,2,3]] - we have to wrap the result
+    list: RPEG.Ct(RPEG.S('[') * RPEG.V('sequence') * RPEG.S(']')) / ->(table) { table.is_a?(Enumerable) ? [table] : [table.unpack] }
   }
 )
 nested_things = grammar * -1
 
 # byebug
+pp nested_things.match "[]"
 pp nested_things.match "[1,2,3]"
 pp nested_things.match "[[1], 2, 3]"
 pp nested_things.match "[[[[[1], 1], 1], 1], 1]"
+
+# Try something similar with the RE library. CURRENT COMPLETELY BROKEN
+re_grammar = <<~GRAM
+  list <- (('' -> nul) '[' sequence ']') ~> append
+  sequence <- (term (separator sequence)?)?
+  term <- number / list
+  separator <- ',' space
+  space <- ' '*
+  number <- [0-9]+ -> to_int
+GRAM
+int_parser = RE.compile(
+  re_grammar,
+  {
+    nul: ->(*) { :nil },
+    to_int: ->(s) { Integer(s) },
+    append: ->(acc, v) { (acc == :nil ? [] : acc) << v},
+  }
+) * -1
+
+pp int_parser.match("[]")
 
 # string = RPEG.P('Alpha ')
 # searcher = search(string)

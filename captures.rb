@@ -425,6 +425,9 @@ class CaptureState
     #
     # Another gotcha: a function that returns nil does not give a capture, while one that returns [nil] has captured the single
     # value nil.
+    #
+    # TODO: consider whether the Maybe monad would help here. It would help distinguish between [1,2,3] and [[1,2,3]] more cleanly,
+    # but not with "no capture" vs "nil was captured", since typically Maybe(nil) = None().
     if result.is_a?(Array)
       result.each { |cap| push cap }
       result.size
