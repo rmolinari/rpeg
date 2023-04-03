@@ -65,6 +65,8 @@ Patterns in RPeg are much like they are in LPeg.
 
 The examples in the LPeg documentation will work once modified for the syntax of RPeg.
 
+TODO: add some actual RPeg examples.
+
 ## Differences Between RPeg and LPeg
 
 Efforts have been made to keep RPeg's syntax as close to LPeg's as possible. But there are necessarily some differences enforced by
@@ -112,6 +114,8 @@ Otherwise the grammar is defined with a Hash. The keys are the nonterminal symbo
   - if it is a non-zero integer it gives the index of the initial terminal's rule, reckoned without the presence of the :initial
     key itself.
   - if it is a symbol or a string it specifies the initial nonterminal directly
+
+TODO: some examples
 
 ### Table captures
 
