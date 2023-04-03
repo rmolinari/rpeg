@@ -5,7 +5,7 @@ RPeg is a Ruby port of [LPeg](http://www.inf.puc-rio.br/~roberto/lpeg/), Lua's p
 
 This project doesn't contain documentation of the library's functionality. For that, see the LPeg page, keeping in mind the
 differences in the Ruby port, described below. For a theoretical justification of the use of PEGs for pattern matching and a lot of
-detail of the internal design of LPeg, see Roberto Ierusalimschy's paper[[Ierusalimschy]](#refereces).
+detail of the internal design of LPeg, see [[Ierusalimschy]](#refereces).
 
 ## Why You Should Use RPeg
 
@@ -19,8 +19,8 @@ easier to read and maintain.
 ## Why You Should Not Use RPeg
 
 I wrote RPeg as learning exercise and for my own illumination. I was interested in how regular expressions can be implemented
-efficiently using a virtual machine ([[Cox]](#references)) and stumbled on Ierusalimschy's paper. I found that paper fascinating and
-decided to try to implement the algorithm in Ruby.
+efficiently using a virtual machine (see [[Cox]](#references)) and stumbled on Ierusalimschy's paper. I found that paper fascinating
+and decided to try to implement the algorithm in Ruby.
 
 ### It is slow
 
@@ -32,8 +32,8 @@ milliseconds. RPeg, on more modern hardware[^1], takes 5.4 seconds (!) for the s
 don't think it will get any faster.
 
 Of course, Ruby can call C code just as well as Lua can, but I am not going to attempt to write RPeg in C. The LPeg code is very
-carefully written to do all of the necessary memory managment, and it gets pretty hairy in the implemention of "runtime captures". I
-have no interest in attempting this for RPeg.
+carefully written to do all of the necessary memory managment, and it gets especially complicated in the implemention of "runtime
+captures". I have no interest in attempting this for RPeg.
 
 ### It is not industrial-strength
 
@@ -148,7 +148,7 @@ is an array. In RPeg, returns from function in contexts like this are treated as
 
 
 # References
-- [Ierusalimschy] Ierusalimschy, R., _Text Pattern-Matching Tool based on Parsing Expression Grammars_, Software: Practice and Experience, 39(3):221-258, https://doi.org/10.1002/spe.892, http://www.inf.puc-rio.br/~roberto/docs/peg.pdf (retrieved 2022-01-??).
+- [Ierusalimschy] Ierusalimschy, R., _Text Pattern-Matching Tool based on Parsing Expression Grammars_, Software: Practice and Experience, 39(3):221-258, Wiley, 2009, https://doi.org/10.1002/spe.892, http://www.inf.puc-rio.br/~roberto/docs/peg.pdf (retrieved 2022-01-??).
 - [Cox] Cox, R., _Regular Expression Matching: the Virtual Machine Approach_, https://swtch.com/~rsc/regexp/regexp2.html.
 
 

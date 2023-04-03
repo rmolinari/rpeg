@@ -2,7 +2,7 @@ require 'rake'
 
 Gem::Specification.new do |s|
   s.name        = 'rpeg'
-  s.version     = '0.1.0'
+  s.version     = '0.2.0'
   s.summary     = "A Ruby port of LPEG, Lua's Parsing Expression Grammar library."
   s.description = <<~DESC
     As a learning excersice I have ported LPEG to Ruby. See the Readme at the github repo for details.
