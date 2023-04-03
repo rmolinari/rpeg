@@ -1,6 +1,8 @@
 require 'test/unit'
-require_relative 'rpeg'
-require_relative 're'
+require 'rpeg'
+# require_relative 're'
+
+RE = RPEG::RE
 
 require 'byebug'
 

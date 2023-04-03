@@ -1,11 +1,9 @@
 #!/usr/bin/env ruby
 
-require 'byebug'
-
 require_relative 'rpeg'
 
 # A straight port of LPEG's re module, though without any support for locales
-module RE
+module RPEG::RE
   extend self
 
   Pattern = RPEG::Pattern
