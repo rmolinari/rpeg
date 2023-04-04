@@ -256,9 +256,9 @@ numbers of `a`'s and `b`'s again:
 
 ``` ruby
 equalcount_re = RPEG::RE.compile(<<~GRAMMAR
-  S <- "a" B / "b" A / ""   -- balanced strings
-  A <- "a" S / "b" A A      -- one more a
-  B <- "b" S / "a" B B      -- one more b
+  S <- "a" B / "b" A / ""
+  A <- "a" S / "b" A A
+  B <- "b" S / "a" B B
 GRAMMAR
 ) * -1
 
@@ -267,8 +267,9 @@ pp equalcount_re.match "abbbaa"  # -> 6
 pp equalcount_re.match "aabba"   # -> nil
 ```
 
-The RE format is the same as it is in LPeg, which means it is influenced by Lua syntax. (See issue #5.)
+The RE format is the same as it is in LPeg and close to how formal PEGs are written ([PEG-wiki](#references)).
 
 # References
 - [Ierusalimschy] Ierusalimschy, R., _Text Pattern-Matching Tool based on Parsing Expression Grammars_, Software: Practice and Experience, 39(3):221-258, Wiley, 2009, https://doi.org/10.1002/spe.892, http://www.inf.puc-rio.br/~roberto/docs/peg.pdf (retrieved 2022-01-??).
 - [Cox] Cox, R., _Regular Expression Matching: the Virtual Machine Approach_, https://swtch.com/~rsc/regexp/regexp2.html.
+- [PEG-wiki] _Parsing expression grammar_ (2023-01-23) in _Wikipedia_. https://en.wikipedia.org/wiki/Parsing_expression_grammar
