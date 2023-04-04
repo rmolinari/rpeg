@@ -77,6 +77,20 @@ pp equalcount_arr.match "ababab" # -> 6
 pp equalcount_arr.match "abbbaa" # -> 6
 pp equalcount_arr.match "aabba"  # -> nil
 
+
+puts "RE form..."
+
+equalcount_re = RPEG::RE.compile(<<~GRAMMAR
+  S <- "a" B / "b" A / ""   -- balanced strings
+  A <- "a" S / "b" A A      -- one more a
+  B <- "b" S / "a" B B      -- one more b
+GRAMMAR
+) * -1
+
+pp equalcount_re.match "ababab"  # -> 6
+pp equalcount_re.match "abbbaa"  # -> 6
+pp equalcount_re.match "aabba"   # -> nil
+
 # Try something similar with the RE library. CURRENT COMPLETELY BROKEN
 # re_grammar = <<~GRAM
 #   list <- (('' -> nul) '[' sequence ']') ~> append
