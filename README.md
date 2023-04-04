@@ -3,7 +3,7 @@
 RPeg is a Ruby port of [LPeg](http://www.inf.puc-rio.br/~roberto/lpeg/), Lua's pattern-matching library based on
 [Parsing Expression Grammars](https://en.wikipedia.org/wiki/Parsing_expression_grammar) (PEGs).
 
-For a theoretical justification of the use of PEGs for pattern matching and a lot of detail of the internal design of LPeg, see
+For a theoretical justification of the use of PEGs for pattern matching and many details of the internal design of LPeg, see
 [[Ierusalimschy]](#references).
 
 ## Why You Should Use RPeg
@@ -21,7 +21,7 @@ gap. The LPeg documentation and the Wikipedia article give some examples of what
 
 ## Why You Should Not Use RPeg
 
-I wrote RPeg as learning exercise and for my own illumination. I was interested in how regular expressions can be implemented
+I wrote RPeg as learning exercise and to satisfy my curiosity. I was interested in how regular expressions can be implemented
 efficiently using a virtual machine - see [[Cox]](#references) - and stumbled on Ierusalimschy's paper. I found that paper
 fascinating and decided to try to implement the algorithm in Ruby.
 
@@ -29,27 +29,26 @@ fascinating and decided to try to implement the algorithm in Ruby.
 
 Very slow.
 
-Ruby is interpreted language. So is Lua, but almost all of LPeg is implemented in C, and this makes LPeg very fast. Ierusalimschy's
-paper, from 2008, states that LPeg can search a large string (the full text of the King James Bible) for "Alpha " in about 40
-milliseconds. RPeg, on more modern hardware[^1], takes 5.4 seconds (!) for the same task. I have profiled my code as best I can and
-don't think it will get any faster.
+Ruby is an interpreted language. So is Lua, but almost all of LPeg is implemented in C, and this makes LPeg very
+fast. Ierusalimschy's paper, from 2008, states that LPeg can search a large string (the full text of the King James Bible) for
+"Alpha " in about 40 milliseconds. RPeg, on more modern hardware (2016 MacBook Pro), takes 5.4 seconds (!) for the same task. I have
+profiled my code as best I can and don't think it will get any faster.
 
-Of course, Ruby can call C code just as well as Lua can, but I am not going to attempt to write RPeg in C. The LPeg code is very
-carefully written to do all of the necessary memory managment, and it gets especially complicated in the implemention of "runtime
-captures". I have no interest in attempting this for RPeg.
+Of course, Ruby can call C code just as well as Lua can, but I am not planning to write RPeg in C. The LPeg code is very carefully
+written to do all of the necessary memory managment, and it gets especially hairy in the implemention of "runtime captures".
 
 ### It is not industrial-strength
 
-As much as I could I implemented LPeg as described in the Ieuraselimschy paper, but this only got me so far. There is a great deal
+As much as I could, I implemented LPeg as described in the Ieuraselimschy paper, but this only got me so far. There is a great deal
 of cleverness in LPeg, performing optimizations when a pattern is compiled for the bespoke VM, when analyzing patterns for errors,
-and for dozen of other things. So, most of RPeg's code was written while carefully reading the LPeg sources. This was mostly
-educational, but in a few cases I simply couldn't understand what the LPeg code was doing, and was reduced to blindly following the
-logic step-by-step, without a clear picture of what was "really" going on. This was unsatisfying, and left me worried about the
-soundness of my code.
+and for dozen of other things. So, most of RPeg's code was written while carefully reading the LPeg sources, mostly written in
+C. This was very educational, but in a few cases I simply couldn't understand what the LPeg code was doing, and was reduced to
+blindly following the logic step-by-step, without a clear picture of what was "really" going on. This was unsatisfying, and left me
+worried about the soundness of my code.
 
 I have ported most of LPeg's (extensive) test suite and it all passes, but this is not a battle-hardened product.
 
-While I have made efforts to follow LPeg's functionality as closely as I can, all bugs in RPeg are my responsibility.
+I have tried hard to follow LPeg's functionality as closely as I can, but all bugs in RPeg are my responsibility.
 
 ## Using RPeg
 
@@ -71,7 +70,7 @@ Here is a table of basic patterns, mostly repeated from the LPeg documentation.
 | `patt1 - patt2`  | Match `patt1` if `patt2` does not match    |
 | `-patt`          | Equivalent to `"" - patt`: `patt` does not match here |
 | `+patt`          | Match `patt` but consume no input. (LPeg uses `#patt` here.) |
-| `RPEG.B(patt)`   | Match `patt` "behind" - that is before - the current position and consume no input |
+| `RPEG.B(patt)`   | Match `patt` "behind", i.e., before, the current position and consume no input |
 
 There are many examples in the LPeg documentation [here](https://www.inf.puc-rio.br/~roberto/lpeg/#ex). Here is an LPeg example:
 
@@ -105,12 +104,11 @@ All of the LPeg examples work with RPeg once the necessary syntactic changes hav
 
 ## Grammars
 
-We can build up and transform patterns incrementally, but for more powerful recursive patterns we need _grammars_. In LPeg we
-represent grammars with tables, which are sort of a cross between arrays and hash tables. See (the LPeg
+We can build up and transform patterns incrementally, but for more powerful recursive patterns we need _grammars_. LPeg represents
+grammars with _tables_, which are sort of a cross between arrays and hash tables. See (the LPeg
 docs)[https://www.inf.puc-rio.br/~roberto/lpeg/#grammar] for an introduction.
 
-Because we don't have tables in Ruby, RPeg allows them to be specified with arrays or hash tables. (Some experimentation was
-done and this seems to be the best way.)
+Because we don't have tables in Ruby, RPeg allows grammars to be specified with arrays or hash tables.
 
 Here is an example grammar from the LPeg docs. It matches strings that have equal numbers of `a`'s and `b`'s
 ``` lua
@@ -138,10 +136,10 @@ pp equalcount.match "ababab" # -> 6
 pp equalcount.match "abbbaa" # -> 6
 pp equalcount.match "aabba"  # -> nil
 ```
-Note that we specify the initial rule via the `:initial` key and can use symbols for rule names and references. The pattern `-1`
-matches only at the end of the string.
+We specify the initial rule with the `:initial` key and can use symbols for rule names and references (strings in this context are
+converted to symbols). The pattern `-1` matches only at the end of the string.
 
-We can also specify the grammar in an array
+We can also specify the grammar in an array.
 
 ``` ruby
 equalcount_arr = RPEG.P( [
@@ -152,7 +150,7 @@ equalcount_arr = RPEG.P( [
 ] ) * -1
 ```
 Now the rules don't have names and are referred to by their indices in the array. If the first element of the array is a
-non-negative integer then it is dropped and refers to the index of the initial rule. (Note that the indices are reckoned after the
+non-negative integer then it is dropped and refers to the index of the initial rule. (The indices are reckoned after the
 first value is dropped.) Otherwise the first rule is the initial rule.
 
 ## Captures
@@ -161,10 +159,9 @@ Captures are a powerful part of LPeg:
 > A capture is a pattern that produces values (the so called semantic information) according to what it matches. LPeg offers several
 > kinds of captures, which produces values based on matches and combine these values to produce new values. Each capture may produce
 > zero or more values.
+
 Captures are beyond the scope of this readme. See their [documentation in LPeg](https://www.inf.puc-rio.br/~roberto/lpeg/#captures).
 RPeg follows the LPeg functionality with the following differences.
-
-TODO: give a brief introduction here.
 
 ### Table captures
 
@@ -180,21 +177,22 @@ Various kinds of captures involve calling a function (i.e., a proc) provided by 
 fn` takes the captures made by patt and passes them as arguments to fn. Then the values returned by fn become the captures of the
 expression.
 
-Lua is better than Ruby at distinguishing between a multiple return values and a single return value that is an array. In RPeg,
+Lua is better than Ruby at distinguishing between multiple return values and a single return value that is an array. In RPeg,
 returns from function in contexts like this are treated as follows:
 
 - `[1, 2, 3]`: multiple captures, 1, 2, 3.
   - this is the natural interpretation as it's the standard way that a Ruby function returns multiple values
 - `[[1, 2, 3]]`: a single capture that is the array `[1, 2, 3]`.
-- nil: indicates no captures
+- nil: no captures
   - even if the function says something like "return nil", the capture code has no way to distinguish between that and a
     function that returns nothing
 - `[nil]`: a single capture with value nil
   - the weirdest case, but I don't see an alternative
 - otherwise, the single value returned by the function is the single captured value.
 
-Other approaches have been tried and haven't worked well in practice. TODO: consider using some sort of Maybe monad (but we need to
-distinguish `Some(nil)` - nil has been captured as a value - and `None` - there was no capture.)
+But see #3 and #4.
+
+Other approaches have been tried and haven't worked well in practice.
 
 ## Other Differences Between RPeg and LPeg
 
@@ -205,8 +203,6 @@ Ruby. They have already been noted in passing.
 
 Lua indexes strings and arrays (tables) from 1, while Ruby indexes from zero. RPeg follows the Ruby way. This means that
 
-- `match` functions return the Ruby-style index of the end of the matched substring
-  - TODO: is this still true?
 - "open" rules in grammars using numeric references use 0-indexing
 - other contexts in which an integer is used as index - such as argument captures - are 0-indexed
 
@@ -245,6 +241,8 @@ Otherwise the grammar is defined with a Hash. The keys are the nonterminal symbo
   - if it is a non-zero integer it gives the index of the initial terminal's rule, reckoned without the presence of the :initial
     key itself.
   - if it is a symbol or a string it specifies the initial nonterminal directly
+
+Some experimentation has been done this is the best way I've found.
 
 # References
 - [Ierusalimschy] Ierusalimschy, R., _Text Pattern-Matching Tool based on Parsing Expression Grammars_, Software: Practice and Experience, 39(3):221-258, Wiley, 2009, https://doi.org/10.1002/spe.892, http://www.inf.puc-rio.br/~roberto/docs/peg.pdf (retrieved 2022-01-??).
