@@ -3,8 +3,9 @@
 RPeg is a Ruby port of [LPeg](http://www.inf.puc-rio.br/~roberto/lpeg/), Lua's pattern-matching library based on
 [Parsing Expression Grammars](https://en.wikipedia.org/wiki/Parsing_expression_grammar) (PEGs).
 
-For a theoretical justification of the use of PEGs for pattern matching and many details of the internal design of LPeg, see
-[[Ierusalimschy]](#references).
+It is distributed under the MIT license.
+
+It is available as a gem: https://rubygems.org/gems/rpeg.
 
 ## Why You Should Use RPeg
 
@@ -18,6 +19,9 @@ expressions and easier to document.   From the LPeg docs:
 
 PEGs are also more powerful than regular expressions, though the various ad hoc extensions to regexes - such as in PCRE - close the
 gap. The LPeg documentation and the Wikipedia article give some examples of what is possible.
+
+For a theoretical justification of the use of PEGs for pattern matching and many details of the internal design of LPeg, see
+[[Ierusalimschy]](#references).
 
 ## Why You Should Not Use RPeg
 
@@ -268,6 +272,3 @@ The RE format is the same as it is in LPeg, which means it is influenced by Lua 
 # References
 - [Ierusalimschy] Ierusalimschy, R., _Text Pattern-Matching Tool based on Parsing Expression Grammars_, Software: Practice and Experience, 39(3):221-258, Wiley, 2009, https://doi.org/10.1002/spe.892, http://www.inf.puc-rio.br/~roberto/docs/peg.pdf (retrieved 2022-01-??).
 - [Cox] Cox, R., _Regular Expression Matching: the Virtual Machine Approach_, https://swtch.com/~rsc/regexp/regexp2.html.
-
-
-[^1]: A 2016 Macbook Pro
