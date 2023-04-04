@@ -132,6 +132,8 @@ class ParsingMachine
     @bread_count = 0 # the number of breadcrumbs in @breadcrumbs (some in the array may be stale)
 
     @extra_args = extra_args.clone
+
+    # @op_counts = Hash.new(0) if profile?
   end
 
   def success?
@@ -148,26 +150,34 @@ class ParsingMachine
 
   def run
     step until @done
+
+    # if profile?
+    #   pp @op_counts.sort_by(&:last).reverse
+    # end
   end
 
   def step
     instr = @program[@i_ptr]
 
+    # if profile?
+    #   @op_counts[instr.op_code] += 1
+    # end
+
     case instr.op_code
-    when Instruction::TEST_CHARSET
-      test_char(instr.data.include?(@subject[@subject_index]), instr.offset)
-    when Instruction::TEST_CHAR
-      test_char(instr.data == @subject[@subject_index], instr.offset)
-    when Instruction::TEST_ANY
-      test_char(@subject_index < @subject_size, instr.offset)
     when Instruction::ANY
       check_char(@subject_index < @subject_size)
+    when Instruction::TEST_CHAR
+      test_char(instr.data == @subject[@subject_index], instr.offset)
+    when Instruction::JUMP
+      @i_ptr += instr.offset
+    when Instruction::TEST_CHARSET
+      test_char(instr.data.include?(@subject[@subject_index]), instr.offset)
+    when Instruction::TEST_ANY
+      test_char(@subject_index < @subject_size, instr.offset)
     when Instruction::CHARSET
       check_char(instr.data.include?(@subject[@subject_index]))
     when Instruction::CHAR
       check_char(instr.data == @subject[@subject_index])
-    when Instruction::JUMP
-      @i_ptr += instr.offset
     when Instruction::CHOICE
       # We push the offset for the other side of the choice
       push(:state, instr.offset)
@@ -251,6 +261,10 @@ class ParsingMachine
     else
       raise "Unhandled op code #{instr.op_code}"
     end
+  end
+
+  private def profile?
+    ENV['profile_machine']
   end
 
   ########################################
