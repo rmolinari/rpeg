@@ -1,2 +1,4 @@
 /profile.*
 /.byebug_history
+/doc/
+/.yardoc/

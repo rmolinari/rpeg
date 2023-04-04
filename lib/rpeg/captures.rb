@@ -1,6 +1,6 @@
 # Code directly related to captures.
 #
-# In terms of LPEG is corresponds to lpcap.h and lpcap.c
+# In terms of LPEG it corresponds to lpcap.h and lpcap.c
 
 # Capture-related data and functionality
 module Capture

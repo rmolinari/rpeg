@@ -410,7 +410,7 @@ class ParsingMachine
   # If there are multiple captures we return them in an array.
   #
   # The capture code in LPEG (mostly in lpcap.c) looks complicated at first but it is made up of a bunch of pieces that each do one
-  # thing and coordinate well togehter. Some extra complexity comes from the manual memory management required in C and the need to
+  # thing and coordinate well together. Some extra complexity comes from the manual memory management required in C and the need to
   # interact with Lua values - this appears to be especially the case with the Runtime capture code, which is bewildering at first
   # view. Porting it one capture kind at a time let me understand it at some level as I went.
   #
