@@ -56,7 +56,8 @@ I have tried hard to follow LPeg's functionality as closely as I can, but all bu
 
 ## Using RPeg
 
-Patterns in RPeg are much as they are in LPeg.
+Patterns in RPeg are much as they are in LPeg. They are first-class objects. The most basic patterns are created with calls to
+methods on the RPEG module and are combined using overloaded Ruby operators.
 
 Here is a table of basic patterns, mostly repeated from the LPeg documentation.
 
@@ -66,7 +67,7 @@ Here is a table of basic patterns, mostly repeated from the LPeg documentation.
 | `RPEG.P(num)`    | Match n characters (for non-negative n)    |
 | `RPEG.P(-num)`   | Match only if there are _not_ n or more characters left. Equivalent to `"" - RPEG.P(num)` |
 | `RPEG.S(str)`    | Match any character in `str`, which can actually be a `String` or a `Set` |
-| `RPEG.R('xy')`    | Match any character in the range `'x'..'y'`. |
+| `RPEG.R('xy')`   | Match any character in the range `'x'..'y'`. |
 | `patt ** n`      | Match at least n repetitions of `patt`. (LPeg uses `patt^n` here.) |
 | `patt ** -n`     | Match at most n repetitions of `patt`      |
 | `patt1 * patt2`  | Match `patt1` following by `patt2`         |
@@ -76,7 +77,7 @@ Here is a table of basic patterns, mostly repeated from the LPeg documentation.
 | `+patt`          | Match `patt` but consume no input. (LPeg uses `#patt` here.) |
 | `RPEG.B(patt)`   | Match `patt` "behind", i.e., before, the current position and consume no input |
 
-There are many examples in the LPeg documentation [here](https://www.inf.puc-rio.br/~roberto/lpeg/#ex). Here is an LPeg example:
+There are many examples in the LPeg documentation [here](https://www.inf.puc-rio.br/~roberto/lpeg/#ex). Here is one:
 
 ``` lua
 local lpeg = require "lpeg"
@@ -89,7 +90,7 @@ print(lpeg.match(p, "hello"))  --> 6
 print(p:match("1 hello"))      --> nil
 ```
 
-In Ruby we have
+In RPeg we do it this way:
 
 ``` ruby
 require 'rpeg'
@@ -109,8 +110,8 @@ All of the LPeg examples work with RPeg once the necessary syntactic changes hav
 ## Grammars
 
 We can build up and transform patterns incrementally, but for more powerful recursive patterns we need _grammars_. LPeg represents
-grammars with _tables_, which are sort of a cross between arrays and hash tables. See (the LPeg
-docs)[https://www.inf.puc-rio.br/~roberto/lpeg/#grammar] for an introduction.
+grammars with [tables](https://www.lua.org/pil/2.5.html), which are sort of a cross between arrays and hash tables. See (the LPeg
+docs)[https://www.inf.puc-rio.br/~roberto/lpeg/#grammar] for an introduction to grammars.
 
 Because we don't have tables in Ruby, RPeg allows grammars to be specified with arrays or hash tables.
 
@@ -123,8 +124,8 @@ equalcount = lpeg.P{
   B = "b" * lpeg.V"S" + "a" * lpeg.V"B" * lpeg.V"B",
 } * -1
 ```
-The keys `S`, `A`, and `B` are the names of rules, and `lpeg.V<key>` refers to the given rule. Note how the initial rule name is
-specified first.
+The keys `S`, `A`, and `B` are the names of rules, and `lpeg.V<key>` refers to the named rule. Note how the initial rule name is
+specified first. The pattern `-1` matches only at the end of the string.
 
 In RPeg we can specify the same grammar with a hash table:
 
@@ -141,7 +142,7 @@ pp equalcount.match "abbbaa" # -> 6
 pp equalcount.match "aabba"  # -> nil
 ```
 We specify the initial rule with the `:initial` key and can use symbols for rule names and references (strings in this context are
-converted to symbols). The pattern `-1` matches only at the end of the string.
+converted to symbols).
 
 We can also specify the grammar in an array.
 
